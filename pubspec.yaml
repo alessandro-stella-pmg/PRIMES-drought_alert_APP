@@ -1,0 +1,69 @@
+name: app_primes
+description: "PRIMES Drought-Alert - Interreg IPA ADRION"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: any
+  cupertino_icons: ^1.0.8
+  flutter_local_notifications: ^18.0.0
+  web_socket_channel: ^2.4.0
+  # Persistenza della Pilot Area scelta al primo avvio
+  shared_preferences: ^2.3.2
+  # Chiamate REST verso il backend PRIMES
+  http: ^1.2.2
+  # Push: FCM e' il canale che funziona anche ad app chiusa
+  firebase_core: ^3.6.0
+  firebase_messaging: ^15.1.3
+  # Portale web, chiamate telefoniche (tel:) ed email (mailto:) dai contatti SOS
+  url_launcher: ^6.3.1
+  # Apertura dei documenti ufficiali dell'area con il visualizzatore di sistema
+  open_filex: ^4.7.0
+  path_provider: ^2.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # Questo pacchetto serve per generare la splash screen
+  flutter_native_splash: ^2.4.0
+
+  flutter_lints: ^5.0.0
+
+# Configurazione dell'App Flutter
+flutter:
+  uses-material-design: true
+
+  # Qui dichiariamo le risorse (immagini) da usare nell'app
+  assets:
+    - assets/PRIMES_MAP.png
+    - assets/logo.png
+    - assets/Logo_interreg_PRIMES.png
+    # Traduzioni: un file JSON per lingua, modificabile dai partner
+    - assets/i18n/
+    # Documenti ufficiali forniti dai referenti delle aree pilota.
+    # Una cartella per area: l'elenco mostrato in app sta in
+    # lib/config/area_content.dart.
+    - assets/docs/hr-medimurje/
+    - assets/docs/hr-koprivnica-krizevci/
+    - assets/docs/me-danilovgrad/
+
+# Splash screen: logo PRIMES al centro + logo Interreg IPA ADRION /
+# Co-funded by the EU come "branding" in fondo alla schermata.
+# Rigenerare con:  dart run flutter_native_splash:create
+flutter_native_splash:
+  color: "#FFFFFF"
+  image: assets/logo.png
+  branding: assets/Logo_interreg_PRIMES.png
+  branding_mode: bottom
+  android_12:
+    image: assets/logo.png
+    color: "#FFFFFF"
+    branding: assets/Logo_interreg_PRIMES.png

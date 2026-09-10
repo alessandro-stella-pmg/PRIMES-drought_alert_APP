@@ -1,0 +1,9 @@
+# Fine riga normalizzate a LF nel repository: il progetto si lavora sia da
+# Windows sia da macOS (build iOS), e senza questo ogni scambio produrrebbe
+# diff finti su file mai toccati.
+* text=auto eol=lf
+
+# Binari: mai convertire.
+*.png binary
+*.jpg binary
+*.pdf binary
