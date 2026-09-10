@@ -43,3 +43,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Firma di rilascio Android: MAI su GitHub.
+# Chi ha questo file puo' firmare aggiornamenti della tua app che il telefono
+# accetta come autentici. Se lo perdi, non puoi piu' aggiornare l'app sullo
+# store: va conservato fuori dal repository e ne va tenuta una copia di backup.
+*.jks
+*.keystore
+android/key.properties
+
+# Configurazione Firebase per iOS (contiene identificativi del progetto)
+ios/Runner/GoogleService-Info.plist
