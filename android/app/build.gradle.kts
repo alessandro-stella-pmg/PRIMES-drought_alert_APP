@@ -1,3 +1,13 @@
+import java.util.Properties
+
+// Credenziali della firma di rilascio. Il file sta fuori dal controllo di
+// versione (vedi .gitignore): senza, l'app si compila lo stesso ma firmata
+// con la chiave di debug, come faceva prima.
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("key.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -31,11 +41,28 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            val store = keystoreProperties.getProperty("storeFile")
+            if (store != null) {
+                storeFile = file(store)
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Con key.properties presente si firma con la chiave di rilascio;
+            // senza si ripiega su quella di debug, cosi' chi clona il
+            // repository puo' comunque compilare.
+            signingConfig = if (keystoreProperties.getProperty("storeFile") != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
