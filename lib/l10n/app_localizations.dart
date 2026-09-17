@@ -19,6 +19,15 @@ class AppLocalizations {
   static AppLocalizations of(BuildContext context) =>
       Localizations.of<AppLocalizations>(context, AppLocalizations)!;
 
+  /// Le stesse traduzioni fuori dall'albero dei widget.
+  ///
+  /// Il canale di notifica e i testi che Android mostra nelle impostazioni di
+  /// sistema si creano prima che esista un `BuildContext`. Senza questo
+  /// resterebbero scritti in una lingua sola, che e' esattamente quello che
+  /// succedeva: un utente croato leggeva "Avvisi PRIMES" in italiano.
+  static Future<AppLocalizations> forLocale(Locale locale) =>
+      const _AppLocalizationsDelegate().load(locale);
+
   static const List<Locale> supportedLocales = [
     Locale('en'),
     Locale('it'),
@@ -48,8 +57,9 @@ class _AppLocalizationsDelegate
   const _AppLocalizationsDelegate();
 
   @override
-  bool isSupported(Locale locale) => AppLocalizations.supportedLocales
-      .any((l) => l.languageCode == locale.languageCode);
+  bool isSupported(Locale locale) => AppLocalizations.supportedLocales.any(
+    (l) => l.languageCode == locale.languageCode,
+  );
 
   @override
   Future<AppLocalizations> load(Locale locale) async {

@@ -171,7 +171,9 @@ class AppNotification {
     final timestamp = DateTime.tryParse(raw ?? '') ?? DateTime.now();
     return AppNotification(
       id: json['id']?.toString(),
-      title: json['title']?.toString() ?? 'Notifica PRIMES',
+      title:
+          json['title']?.toString() ??
+          _sysText('notification_default_title', 'PRIMES notification'),
       body: json['message']?.toString() ?? '',
       time: _formatTimestamp(timestamp),
       timestamp: timestamp,
@@ -359,14 +361,61 @@ void clearNotificationsState() {
   _syncSystemTray(const []);
 }
 
-final AndroidNotificationChannel _notificationChannel =
+/// Traduzioni dei testi che compaiono **fuori** dall'interfaccia: nome e
+/// descrizione del canale nelle impostazioni di sistema, titolo di ripiego
+/// delle notifiche. Si ricarica a ogni cambio area, perche' la lingua
+/// dipende da quella.
+AppLocalizations? _systemL10n;
+
+/// Traduce [key] per quei testi. Prima che l'area sia nota - primo avvio, o
+/// notifica ricevuta durante l'inizializzazione - vale [fallback], in inglese.
+String _sysText(String key, String fallback) {
+  final l10n = _systemL10n;
+  if (l10n == null) return fallback;
+  final value = l10n.t(key);
+  return value == key ? fallback : value;
+}
+
+/// L'identificativo del canale non cambia mai: Android lo usa per ritrovare
+/// le impostazioni che l'utente ha scelto (suono, importanza). Cambiarlo
+/// significherebbe ricominciare da capo con un canale nuovo e lasciare il
+/// vecchio orfano nelle impostazioni.
+const String _notificationChannelId = 'primes_alerts';
+
+AndroidNotificationChannel _buildNotificationChannel() =>
     AndroidNotificationChannel(
-      'primes_alerts',
-      'Avvisi PRIMES',
-      description: 'Avvisi e comunicazioni della tua area pilota.',
+      _notificationChannelId,
+      _sysText('notification_channel_name', 'PRIMES notifications'),
+      description: _sysText(
+        'notification_channel_desc',
+        'Notices and messages from your pilot area.',
+      ),
       importance: Importance.high,
       playSound: true,
     );
+
+AndroidNotificationChannel _notificationChannel = _buildNotificationChannel();
+
+/// Riscrive il canale nella lingua dell'area corrente.
+///
+/// Non basta farlo all'avvio: cambiando area cambia la lingua, e il canale
+/// gia' creato resterebbe scritto in quella di prima nelle impostazioni di
+/// sistema. Ricrearlo con lo stesso id ne aggiorna nome e descrizione senza
+/// perdere le preferenze dell'utente.
+Future<void> _refreshNotificationChannel() async {
+  final locale = selectedPilotArea.value?.locale ?? const Locale('en');
+  try {
+    _systemL10n = await AppLocalizations.forLocale(locale);
+  } catch (e) {
+    debugPrint('[notifiche] traduzioni di sistema non caricate: $e');
+  }
+  _notificationChannel = _buildNotificationChannel();
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >()
+      ?.createNotificationChannel(_notificationChannel);
+}
 
 Future<void> initializeNotificationService() async {
   // Icona piccola delle notifiche: sagoma bianca del logo, come vuole Android.
@@ -389,11 +438,7 @@ Future<void> initializeNotificationService() async {
     onDidReceiveNotificationResponse: (response) =>
         _openLocalNotificationPayload(response.payload),
   );
-  await flutterLocalNotificationsPlugin
-      .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin
-      >()
-      ?.createNotificationChannel(_notificationChannel);
+  await _refreshNotificationChannel();
 
   // L'app e' stata chiusa con quella notifica ancora nel pannello, e aperta
   // toccandola.
@@ -423,7 +468,7 @@ Future<void> showLocalNotification(AppNotification notification) async {
       importance: Importance.high,
       priority: Priority.high,
       playSound: true,
-      ticker: 'Avviso PRIMES',
+      ticker: _sysText('notification_default_title', 'PRIMES notification'),
       color: notification.isUrgent
           ? const Color(0xFFD32F2F)
           : const Color(0xFF0D47A1),
@@ -489,6 +534,11 @@ Future<void> main() async {
   if (area != null) await AuthService.setLanguage(area.locale.languageCode);
 
   await initializeNotificationService();
+  // Il selettore dell'area e' raggiungibile dalla Home: quando l'utente la
+  // cambia, il canale va riscritto nella lingua nuova.
+  selectedPilotArea.addListener(() {
+    unawaited(_refreshNotificationChannel());
+  });
   final initial = PushService.initialMessage;
   if (initial != null) _handlePushOpened(initial);
 
