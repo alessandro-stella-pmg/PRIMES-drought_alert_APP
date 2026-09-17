@@ -12,7 +12,20 @@
           "package_name": "com.primes.droughtalert"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "225520625301-4qlhl3n3jrk0sam6o661abeocp5t3go8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.primes.droughtalert",
+            "certificate_hash": "44de15c91893da15e45cc4df29336e2796ed010f"
+          }
+        },
+        {
+          "client_id": "225520625301-uglhe1e385u37f1gkciv3sld0o8l6avm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAQtcB1X-NWZ6nO3C5o8H32dypSENbrP_Q"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "225520625301-uglhe1e385u37f1gkciv3sld0o8l6avm.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

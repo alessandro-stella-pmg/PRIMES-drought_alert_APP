@@ -25,8 +25,14 @@ class AreaLinks {
   /// che si limitano a rimbalzare l'utente sul browser esterno. La vista
   /// integrata resta il browser di sistema — stessa sandbox, stessa barra
   /// dell'indirizzo — ma con il pulsante per tornare indietro nell'app.
-  static Future<bool> openUrl(String url) =>
-      _launch(Uri.parse(url), mode: LaunchMode.inAppBrowserView);
+  ///
+  /// Un indirizzo senza schema (`primes-drought.com`, facile da scrivere in un
+  /// `--dart-define`) verrebbe rifiutato dalla vista integrata, che accetta
+  /// solo http(s): qui si completa, invece di far fallire l'apertura.
+  static Future<bool> openUrl(String url) {
+    final parsed = Uri.parse(url);
+    return _launch(parsed.hasScheme ? parsed : Uri.parse('https://$url'));
+  }
 
   /// Avvia una telefonata verso [phone].
   ///
@@ -66,14 +72,25 @@ class AreaLinks {
     }
   }
 
-  /// [mode] resta `externalApplication` per `tel:` e `mailto:`, che devono
-  /// arrivare al telefono e al client di posta veri.
-  static Future<bool> _launch(
-    Uri uri, {
-    LaunchMode mode = LaunchMode.externalApplication,
-  }) async {
+  /// Come va aperto [uri].
+  ///
+  /// Regola unica e senza eccezioni: il web resta **dentro** l'app, tutto il
+  /// resto esce. Sta qui e non nei punti di chiamata apposta — finche' la
+  /// modalita' era un parametro con un default, bastava una chiamata distratta
+  /// a `_launch` per rimandare un indirizzo web al browser di sistema, cioe'
+  /// per rimettere in gioco la pubblicazione sugli store. Ora non si puo'
+  /// scegliere: la decide lo schema dell'URL.
+  @visibleForTesting
+  static LaunchMode launchModeFor(Uri uri) =>
+      (uri.scheme == 'http' || uri.scheme == 'https')
+      ? LaunchMode.inAppBrowserView
+      // `tel:` e `mailto:` devono arrivare al telefono e al client di posta
+      // veri: un browser integrato non saprebbe cosa farne.
+      : LaunchMode.externalApplication;
+
+  static Future<bool> _launch(Uri uri) async {
     try {
-      return await launchUrl(uri, mode: mode);
+      return await launchUrl(uri, mode: launchModeFor(uri));
     } catch (e) {
       debugPrint('[link] apertura di $uri fallita: $e');
       return false;

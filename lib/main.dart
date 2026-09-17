@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -14,43 +15,95 @@ import 'l10n/app_localizations.dart';
 import 'services/api_client.dart';
 import 'services/app_prefs.dart';
 import 'services/area_links.dart';
+import 'services/attachments.dart';
+import 'services/auth_service.dart';
 import 'services/push_service.dart';
 
 // --- STATO GLOBALE ---
 
-/// Allegati scaricati dalle notifiche. Parte vuoto: i documenti ufficiali
-/// dell'area arrivano da `area_content.dart`, qui finisce solo cio' che
-/// l'utente scarica.
-final ValueNotifier<List<Map<String, String>>> archivioDocumenti =
-    ValueNotifier([]);
+// Gli allegati scaricati dalle notifiche (`archivioDocumenti`) stanno in
+// services/attachments.dart, insieme a download e apertura.
 
-void aggiungiDocumento(String nome, String dim) {
-  bool esiste = archivioDocumenti.value.any((doc) => doc['nome'] == nome);
-  if (!esiste) {
-    archivioDocumenti.value = [
-      {'nome': nome, 'dim': dim, 'data': 'Oggi'},
-      ...archivioDocumenti.value,
-    ];
+/// Icona e colore di un file, dall'estensione del nome.
+(IconData, Color) fileIconFor(String name) {
+  final lower = name.toLowerCase();
+  if (lower.endsWith('.pdf')) {
+    return (Icons.picture_as_pdf, const Color(0xFFD32F2F));
+  }
+  if (RegExp(r'\.(png|jpe?g|gif|webp|heic)$').hasMatch(lower)) {
+    return (Icons.image_outlined, const Color(0xFF0D47A1));
+  }
+  if (RegExp(r'\.(xlsx?|csv|ods)$').hasMatch(lower)) {
+    return (Icons.table_chart_outlined, const Color(0xFF2E7D32));
+  }
+  return (Icons.description_outlined, const Color(0xFF0D47A1));
+}
+
+/// Messaggio per un download o un'apertura non riusciti.
+String attachmentErrorText(AppLocalizations l10n, Object error, String name) {
+  final reason = error is AttachmentException ? error.reason : null;
+  switch (reason) {
+    case AttachmentError.noViewer:
+      return l10n.f('documents_open_failed', {'name': name});
+    case AttachmentError.notAllowed:
+      return l10n.t('notification_attachment_unavailable');
+    default:
+      return l10n.t('notification_download_failed');
   }
 }
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
 
-/// Storico degli avvisi. Si riempie con quelli veri del backend, via REST
-/// all'avvio e via WebSocket/FCM mentre l'app e' aperta.
+/// Storico degli avvisi dell'utente loggato. Si riempie con quelli del backend
+/// via REST all'avvio e con le push FCM mentre l'app e' aperta.
 final ValueNotifier<List<AppNotification>> notificheSalvate = ValueNotifier([]);
 
-class AlertLevelState {
-  final String label;
-  final Color color;
-  const AlertLevelState(this.label, this.color);
+/// Notifica da aprire appena possibile: quella toccata nel pannello di sistema.
+/// La consuma la [HomePage], che c'e' solo quando l'utente e' loggato.
+final ValueNotifier<AppNotification?> notificaDaAprire = ValueNotifier(null);
 
-  /// Stato iniziale: il livello vero lo sa solo il backend. Finche' non
-  /// risponde non si puo' scrivere niente, e un'etichetta vuota fa mostrare
-  /// alla card il testo tradotto "non disponibile".
-  const AlertLevelState.unknown() : label = '', color = const Color(0xFF90A4AE);
+class AlertLevelState {
+  /// Nome gia' pronto: quello che il referente ha scritto nel form, oppure
+  /// quello che manda il backend quando non c'e' nient'altro.
+  final String label;
+
+  /// Chiave di `assets/i18n/` del nome generico, valorizzata per le aree che
+  /// non hanno ancora restituito il form. La traduzione avviene al momento di
+  /// mostrarlo, non qui: risolverla subito significherebbe restare nella
+  /// lingua dell'area precedente dopo un cambio area.
+  final String? genericKey;
+
+  final Color color;
+
+  const AlertLevelState(this.label, this.color) : genericKey = null;
+
+  const AlertLevelState.generic(this.genericKey, this.color) : label = '';
+
+  /// Stato iniziale: il livello vero lo sa solo il backend.
+  const AlertLevelState.unknown()
+    : label = '',
+      genericKey = null,
+      color = const Color(0xFF90A4AE);
+
+  /// Il nome da scrivere nella card, nella lingua dell'area.
+  ///
+  /// Finche' il backend non risponde non si inventa un livello: si dice che
+  /// non e' disponibile.
+  String labelFor(AppLocalizations l10n) {
+    final key = genericKey;
+    if (key != null) return l10n.t(key);
+    return label.isEmpty ? l10n.t('alert_level_unknown') : label;
+  }
 }
+
+/// Dalla chiave del backend alla chiave di traduzione del nome generico.
+const Map<String, String> _genericLevelKeys = {
+  'none': 'alert_level_none',
+  'level1': 'alert_level_1',
+  'level2': 'alert_level_2',
+  'level3': 'alert_level_3',
+};
 
 Color _colorFromHex(String hex) {
   final h = hex.replaceAll('#', '');
@@ -65,9 +118,10 @@ final ValueNotifier<AlertLevelState> currentAlertLevel = ValueNotifier(
 /// dell'area ha scritto nel form.
 ///
 /// Il backend ragiona per chiavi (`none`, `level1`...) con etichette italiane
-/// di servizio: mostrarle cosi' com'erano significava un'app croata che scrive
-/// "Livello 2 - Allarme". Se l'area non e' configurata, o la chiave non si
-/// riconosce, si mostra quello che manda il backend.
+/// di servizio: mostrarle cosi' com'erano significava un'app bosniaca che
+/// scrive "Livello 2 - Allarme". Se l'area non ha ancora restituito il form si
+/// ripiega sul nome generico tradotto; solo se nemmeno la chiave si riconosce
+/// si mostra quello che manda il backend.
 AlertLevelState _alertStateFrom({
   required String? key,
   required String label,
@@ -79,70 +133,245 @@ AlertLevelState _alertStateFrom({
     backendLabel: label,
   );
   if (level != null) return AlertLevelState(level.name, level.color);
+
+  final canonical = backendLevelKeyFor(key: key, backendLabel: label);
+  final generic = _genericLevelKeys[canonical];
+  if (generic != null) {
+    return AlertLevelState.generic(generic, _colorFromHex(colorHex));
+  }
   return AlertLevelState(label, _colorFromHex(colorHex));
 }
 
 class AppNotification {
+  /// Id del backend. Manca solo per notifiche arrivate da vecchie versioni.
+  final String? id;
   final String title;
   final String body;
   final String time;
+  final DateTime timestamp;
   final bool isUrgent;
   final String? attachmentName;
+  final String? documentUrl;
   bool isRead;
 
   AppNotification({
     required this.title,
     required this.body,
     required this.time,
+    required this.timestamp,
+    this.id,
     this.isUrgent = false,
     this.attachmentName,
+    this.documentUrl,
     this.isRead = false,
   });
 
   factory AppNotification.fromJson(Map<String, dynamic> json) {
-    final timestamp =
-        json['timestamp']?.toString() ?? DateTime.now().toIso8601String();
+    final raw = json['timestamp']?.toString();
+    final timestamp = DateTime.tryParse(raw ?? '') ?? DateTime.now();
     return AppNotification(
+      id: json['id']?.toString(),
       title: json['title']?.toString() ?? 'Notifica PRIMES',
       body: json['message']?.toString() ?? '',
       time: _formatTimestamp(timestamp),
+      timestamp: timestamp,
       isUrgent: json['type']?.toString().toLowerCase() == 'emergency',
       attachmentName: json['extra'] is Map
           ? json['extra']['attachments']?.toString()
-          : null,
-      isRead: false,
+          : json['documentName']?.toString(),
+      documentUrl: json['documentUrl']?.toString(),
+      isRead: json['read'] == true,
     );
   }
 
-  static String _formatTimestamp(String timestamp) {
-    try {
-      final dt = DateTime.parse(timestamp).toLocal();
-      return '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    } catch (_) {
-      return timestamp;
-    }
+  factory AppNotification.fromPush(PushMessage push) => AppNotification(
+    id: push.id,
+    title: push.title,
+    body: push.body,
+    time: _formatTimestamp(push.receivedAt),
+    timestamp: push.receivedAt,
+    isUrgent: push.isUrgent,
+    attachmentName: push.documentName,
+    documentUrl: push.documentUrl,
+  );
+
+  /// Chiave stabile per selezione e deduplica, anche fra due caricamenti.
+  String get key => id ?? '${timestamp.toIso8601String()}|$title';
+
+  PushMessage toPush() => PushMessage(
+    id: id,
+    title: title,
+    body: body,
+    isUrgent: isUrgent,
+    receivedAt: timestamp,
+    documentUrl: documentUrl,
+    documentName: attachmentName,
+  );
+
+  static String _formatTimestamp(DateTime timestamp) {
+    final dt = timestamp.toLocal();
+    return '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 }
 
-void markAllNotificationsRead() {
-  for (var item in notificheSalvate.value) {
-    item.isRead = true;
+// --- LETTE ED ELIMINATE ---
+//
+// Lo stato vive nel backend, per utente: rientrando nell'app (o da un altro
+// telefono) le notifiche lette restano lette e le eliminate non tornano.
+// L'interfaccia si aggiorna subito. Le notifiche lette in questa sessione
+// restano lette anche se un caricamento parte prima che il backend abbia
+// registrato la lettura (e se il backend non l'ha registrata, si riprova); le
+// eliminazioni in corso restano nascoste finche' il backend non risponde.
+
+final Set<String> _lettePendenti = {};
+final Set<String> _eliminatePendenti = {};
+
+/// Aggiunge una notifica in cima all'elenco, se non c'e' gia'.
+///
+/// La stessa notifica puo' arrivare due volte (push in primo piano e poi tap
+/// sul pannello, o push e ricaricamento): senza deduplica l'elenco si sporca.
+AppNotification mergeNotification(AppNotification notif) {
+  final existing = notificheSalvate.value
+      .where((n) => n.key == notif.key)
+      .firstOrNull;
+  if (existing != null) return existing;
+  if (_eliminatePendenti.contains(notif.key)) return notif;
+  notif.isRead = notif.isRead || _lettePendenti.contains(notif.key);
+  notificheSalvate.value = [notif, ...notificheSalvate.value];
+  return notif;
+}
+
+/// Ricarica lo storico dell'utente per l'area, dal backend.
+Future<void> loadNotifications(String areaId) async {
+  final list = await ApiClient.notifications(areaId, limit: 50);
+  final loaded = list
+      .map(AppNotification.fromJson)
+      .where((n) => !_eliminatePendenti.contains(n.key))
+      .toList();
+
+  // Riprova le letture che il backend non ha ancora registrato.
+  final retryRead = <String>[];
+  for (final n in loaded) {
+    if (_lettePendenti.contains(n.key) && !n.isRead) {
+      n.isRead = true;
+      if (n.id != null) retryRead.add(n.id!);
+    }
+  }
+  notificheSalvate.value = loaded;
+  if (!loaded.any((n) => !n.isRead)) _syncSystemTray(const []);
+  if (retryRead.isNotEmpty) unawaited(_sendRead(retryRead));
+}
+
+/// Segna come lette: e' cio' che spegne il pallino rosso nella home.
+///
+/// Si ragiona per chiave, non per istanza: la notifica aperta dal pannello di
+/// sistema puo' essere una copia di quella in elenco (l'elenco si e' ricaricato
+/// nel frattempo), e segnare solo la copia lasciava acceso il pallino.
+Future<void> markNotificationsRead(Iterable<AppNotification> items) async {
+  final keys = <String>{};
+  final toSend = <String>{};
+  for (final n in items) {
+    keys.add(n.key);
+    if (!n.isRead && n.id != null) toSend.add(n.id!);
+    n.isRead = true;
+  }
+  if (keys.isEmpty) return;
+  _lettePendenti.addAll(keys);
+  for (final n in notificheSalvate.value) {
+    if (keys.contains(n.key) && !n.isRead) {
+      n.isRead = true;
+      if (n.id != null) toSend.add(n.id!);
+    }
   }
   notificheSalvate.value = [...notificheSalvate.value];
+  _syncSystemTray(keys);
+  await _sendRead(toSend.toList());
+}
+
+/// Toglie dal pannello di sistema le notifiche gia' lette nell'app.
+///
+/// Finche' restano li', Android tiene acceso il pallino sull'icona dell'app
+/// anche se nell'app risultano lette. Backend e app pubblicano ogni notifica
+/// con il suo id come tag (id numerico 0): e' cosi' che si ritrova.
+void _syncSystemTray(Iterable<String> readKeys) {
+  unawaited(() async {
+    try {
+      if (!notificheSalvate.value.any((n) => !n.isRead)) {
+        await flutterLocalNotificationsPlugin.cancelAll();
+        return;
+      }
+      for (final key in readKeys) {
+        await flutterLocalNotificationsPlugin.cancel(0, tag: key);
+      }
+    } catch (e) {
+      // Nei test (e senza plugin) non c'e' un pannello da pulire.
+      debugPrint('[inbox] pannello non aggiornato: $e');
+    }
+  }());
+}
+
+Future<void> _sendRead(List<String> ids) async {
+  if (ids.isEmpty) return;
+  try {
+    await ApiClient.markNotificationsRead(ids);
+  } catch (e) {
+    // Resta pendente: si riprova al prossimo caricamento.
+    debugPrint('[inbox] lettura non registrata: $e');
+  }
+}
+
+/// Elimina le notifiche indicate per questo utente.
+///
+/// Se il backend non risponde le notifiche tornano in elenco e l'errore
+/// risale: l'utente deve sapere che non sono state eliminate.
+Future<void> deleteNotifications(Set<String> keys) async {
+  final before = notificheSalvate.value;
+  final removed = before.where((n) => keys.contains(n.key)).toList();
+  if (removed.isEmpty) return;
+  notificheSalvate.value = before.where((n) => !keys.contains(n.key)).toList();
+  _syncSystemTray(keys);
+
+  final ids = removed.map((n) => n.id).whereType<String>().toList();
+  if (ids.isEmpty) return;
+  _eliminatePendenti.addAll(keys);
+  try {
+    await ApiClient.deleteNotifications(ids);
+  } catch (_) {
+    final current = notificheSalvate.value;
+    final restored = [
+      ...current,
+      ...removed.where((r) => !current.any((c) => c.key == r.key)),
+    ]..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    notificheSalvate.value = restored;
+    rethrow;
+  } finally {
+    _eliminatePendenti.removeAll(keys);
+  }
+}
+
+/// Logout o cambio area: lo storico era dell'utente e dell'area precedenti.
+void clearNotificationsState() {
+  _lettePendenti.clear();
+  _eliminatePendenti.clear();
+  notificaDaAprire.value = null;
+  notificheSalvate.value = [];
+  _notificheMostrate.clear();
+  _syncSystemTray(const []);
 }
 
 final AndroidNotificationChannel _notificationChannel =
     AndroidNotificationChannel(
       'primes_alerts',
       'Avvisi PRIMES',
-      description: 'Canale per le notifiche demo PRIMES.',
+      description: 'Avvisi e comunicazioni della tua area pilota.',
       importance: Importance.high,
       playSound: true,
     );
 
 Future<void> initializeNotificationService() async {
+  // Icona piccola delle notifiche: sagoma bianca del logo, come vuole Android.
   const AndroidInitializationSettings androidSettings =
-      AndroidInitializationSettings('@mipmap/ic_launcher');
+      AndroidInitializationSettings('ic_stat_primes');
   const DarwinInitializationSettings iosSettings = DarwinInitializationSettings(
     requestAlertPermission: true,
     requestBadgePermission: true,
@@ -154,12 +383,35 @@ Future<void> initializeNotificationService() async {
     macOS: iosSettings,
   );
 
-  await flutterLocalNotificationsPlugin.initialize(settings);
+  await flutterLocalNotificationsPlugin.initialize(
+    settings,
+    // Tap su una notifica mostrata dall'app mentre era in primo piano.
+    onDidReceiveNotificationResponse: (response) =>
+        _openLocalNotificationPayload(response.payload),
+  );
   await flutterLocalNotificationsPlugin
       .resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin
       >()
       ?.createNotificationChannel(_notificationChannel);
+
+  // L'app e' stata chiusa con quella notifica ancora nel pannello, e aperta
+  // toccandola.
+  final launch = await flutterLocalNotificationsPlugin
+      .getNotificationAppLaunchDetails();
+  if (launch?.didNotificationLaunchApp ?? false) {
+    _openLocalNotificationPayload(launch!.notificationResponse?.payload);
+  }
+}
+
+void _openLocalNotificationPayload(String? payload) {
+  if (payload == null || payload.isEmpty) return;
+  try {
+    final data = Map<String, dynamic>.from(jsonDecode(payload) as Map);
+    _handlePushOpened(PushMessage.fromData(data));
+  } catch (_) {
+    // payload di vecchie versioni (solo il titolo): niente da aprire
+  }
 }
 
 Future<void> showLocalNotification(AppNotification notification) async {
@@ -172,8 +424,13 @@ Future<void> showLocalNotification(AppNotification notification) async {
       priority: Priority.high,
       playSound: true,
       ticker: 'Avviso PRIMES',
-      color: const Color(0xFFD32F2F),
-      icon: '@mipmap/ic_launcher',
+      color: notification.isUrgent
+          ? const Color(0xFFD32F2F)
+          : const Color(0xFF0D47A1),
+      icon: 'ic_stat_primes',
+      // Stesso tag (e id 0) con cui FCM pubblica la notifica: se arriva due
+      // volte, la seconda sostituisce la prima invece di aggiungersi.
+      tag: notification.key,
     ),
     iOS: DarwinNotificationDetails(
       badgeNumber: notificheSalvate.value.where((n) => !n.isRead).length,
@@ -181,36 +438,60 @@ Future<void> showLocalNotification(AppNotification notification) async {
   );
 
   await flutterLocalNotificationsPlugin.show(
-    notification.hashCode,
+    0,
     notification.title,
     notification.body,
     platformDetails,
-    payload: notification.title,
+    // Tutto il contenuto: il tap deve aprire il dettaglio anche senza rete.
+    payload: jsonEncode(notification.toPush().toData()),
   );
 }
 
-/// Una push in arrivo diventa una notifica in elenco, come quelle del WebSocket.
+/// Push arrivata con l'app in primo piano: entra in elenco.
+///
+/// Su Android il sistema non la mostra da solo, quindi la mostra l'app. Su
+/// iOS la presenta gia' il sistema (vedi PushService.init): mostrarla anche
+/// qui la farebbe comparire due volte.
 void _handlePushMessage(PushMessage push) {
-  final notif = AppNotification(
-    title: push.title,
-    body: push.body,
-    time: AppNotification._formatTimestamp(push.receivedAt.toIso8601String()),
-    isUrgent: push.isUrgent,
-    attachmentName: push.documentName,
-  );
-  notificheSalvate.value = [notif, ...notificheSalvate.value];
+  if (!AuthService.isSignedIn) return;
+  final notif = mergeNotification(AppNotification.fromPush(push));
+  // Una notifica gia' mostrata in questa sessione non si mostra di nuovo.
+  if (defaultTargetPlatform == TargetPlatform.android &&
+      _notificheMostrate.add(notif.key)) {
+    showLocalNotification(notif);
+  }
+}
+
+/// Chiavi delle notifiche gia' mostrate dall'app in primo piano.
+final Set<String> _notificheMostrate = {};
+
+/// Tap su una notifica: l'app si apre sul suo dettaglio.
+void _handlePushOpened(PushMessage push) {
+  final notif = AuthService.isSignedIn
+      ? mergeNotification(AppNotification.fromPush(push))
+      : AppNotification.fromPush(push);
+  notificaDaAprire.value = notif;
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppPrefs.load();
-  await initializeNotificationService();
 
   // FCM: canale affidabile, funziona anche ad app chiusa. Se Firebase non e'
   // configurato l'init non solleva e l'app resta usabile senza push.
-  await PushService.init(onMessage: _handlePushMessage);
+  await PushService.init(
+    onMessage: _handlePushMessage,
+    onOpened: _handlePushOpened,
+  );
+  // Sessione salvata sul dispositivo: chi era loggato entra direttamente.
+  await AuthService.ready();
   final area = selectedPilotArea.value;
-  if (area != null) await PushService.registerForArea(area.id);
+  if (area != null) await AuthService.setLanguage(area.locale.languageCode);
+
+  await initializeNotificationService();
+  final initial = PushService.initialMessage;
+  if (initial != null) _handlePushOpened(initial);
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -230,52 +511,205 @@ class PrimesApp extends StatelessWidget {
     return ValueListenableBuilder<PilotArea?>(
       valueListenable: selectedPilotArea,
       builder: (context, area, _) => MaterialApp(
-      title: 'PRIMES Drought-Alert',
-      locale: area?.locale,
-      localizationsDelegates: const [
-        AppLocalizations.delegate,
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
-      supportedLocales: AppLocalizations.supportedLocales,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0D47A1),
-          primary: const Color(0xFF0D47A1),
-          surface: Colors.transparent,
-        ),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF5F7FA),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFFE1F5FE),
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-          centerTitle: true,
-          titleTextStyle: TextStyle(
-            color: Color(0xFF0D47A1),
-            fontSize: 24,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 0.5,
+        title: 'PRIMES Drought-Alert',
+        locale: area?.locale,
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF0D47A1),
+            primary: const Color(0xFF0D47A1),
+            surface: Colors.transparent,
           ),
-          iconTheme: IconThemeData(color: Color(0xFF0D47A1), size: 28),
-        ),
-        textTheme: const TextTheme(
-          displayLarge: TextStyle(
-            color: Color(0xFF1E293B),
-            fontWeight: FontWeight.w800,
+          useMaterial3: true,
+          scaffoldBackgroundColor: const Color(0xFFF5F7FA),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xFFE1F5FE),
+            surfaceTintColor: Colors.transparent,
+            elevation: 0,
+            centerTitle: true,
+            titleTextStyle: TextStyle(
+              color: Color(0xFF0D47A1),
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.5,
+            ),
+            iconTheme: IconThemeData(color: Color(0xFF0D47A1), size: 28),
+          ),
+          textTheme: const TextTheme(
+            displayLarge: TextStyle(
+              color: Color(0xFF1E293B),
+              fontWeight: FontWeight.w800,
+            ),
           ),
         ),
-      ),
-      // MODIFICA: L'app ora parte dalla LoginScreen
-      home: const LoginScreen(),
-      debugShowCheckedModeBanner: false,
+        // Login obbligatorio: chi ha gia' una sessione entra direttamente.
+        home: const AuthGate(),
+        debugShowCheckedModeBanner: false,
       ),
     );
   }
 }
 
-// --- LOGIN SCREEN (NUOVA SCHERMATA) ---
+/// Prima schermata: decide dove entra l'app all'avvio.
+///
+/// La sessione Firebase resta salvata sul dispositivo, quindi chi aveva gia'
+/// fatto login rientra direttamente in Home. Se sul telefono manca l'area
+/// (reinstallazione, altro dispositivo) la si rilegge dal profilo.
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!AuthService.isSignedIn) return const LoginScreen();
+    if (selectedPilotArea.value == null) return const ProfileGate();
+    if (!AuthService.isEmailVerified) return const VerifyEmailScreen();
+    return const HomePage();
+  }
+}
+
+/// Sfondo comune alle schermate di accesso.
+const BoxDecoration _authBackground = BoxDecoration(
+  gradient: LinearGradient(
+    begin: Alignment.topCenter,
+    end: Alignment.bottomCenter,
+    colors: [Colors.white, Color(0xFF89F7FE), Color(0xFF66A6FF)],
+    stops: [0.0, 0.35, 1.0],
+  ),
+);
+
+void _showAuthError(BuildContext context, Object error) {
+  final l10n = AppLocalizations.of(context);
+  final key = error is AuthFailure ? error.messageKey : 'auth_error_generic';
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(l10n.t(key)), backgroundColor: Colors.redAccent),
+  );
+}
+
+/// Menu delle aree pilota, con la sigla della lingua. Si usa solo quando
+/// l'area si sceglie: alla registrazione.
+Widget _pilotAreaDropdown({
+  required AppLocalizations l10n,
+  required PilotArea? value,
+  required ValueChanged<PilotArea?> onChanged,
+}) {
+  return Container(
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: 0.9),
+      borderRadius: BorderRadius.circular(16),
+      boxShadow: const [
+        BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 4)),
+      ],
+    ),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    child: DropdownButtonFormField<PilotArea>(
+      initialValue: value,
+      dropdownColor: Colors.white,
+      decoration: InputDecoration(
+        border: InputBorder.none,
+        prefixIcon: const Icon(Icons.location_on, color: Color(0xFF0D47A1)),
+        labelText: l10n.t('login_select_area'),
+        labelStyle: const TextStyle(color: Colors.black54),
+      ),
+      isExpanded: true,
+      items: pilotAreas.map((PilotArea area) {
+        return DropdownMenuItem<PilotArea>(
+          value: area,
+          child: Row(
+            children: [
+              _LanguageBadge(code: area.languageBadge),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  area.displayName,
+                  style: const TextStyle(fontSize: 14, color: Colors.black87),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+      onChanged: onChanged,
+      validator: (value) =>
+          value == null ? l10n.t('login_select_area_error') : null,
+    ),
+  );
+}
+
+/// Avviso sotto il menu delle aree: lingua e scelta definitiva.
+Widget _areaHints(AppLocalizations l10n) => Padding(
+  padding: const EdgeInsets.symmetric(horizontal: 6),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        l10n.t('login_language_hint'),
+        style: TextStyle(fontSize: 12, color: Colors.blueGrey.shade700),
+      ),
+      const SizedBox(height: 4),
+      Text(
+        l10n.t('register_area_fixed_hint'),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          color: Colors.blueGrey.shade800,
+        ),
+      ),
+    ],
+  ),
+);
+
+Widget _primaryButton({
+  required String label,
+  required VoidCallback? onPressed,
+  bool busy = false,
+}) {
+  return SizedBox(
+    width: double.infinity,
+    height: 55,
+    child: ElevatedButton(
+      onPressed: onPressed,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: const Color(0xFF0D47A1),
+        foregroundColor: Colors.white,
+        disabledBackgroundColor: const Color(0xFF0D47A1).withValues(alpha: 0.6),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 5,
+      ),
+      child: busy
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: Colors.white,
+              ),
+            )
+          : Text(
+              label,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1,
+              ),
+            ),
+    ),
+  );
+}
+
+enum _AccessMode { choose, login, register }
+
+// --- LOGIN SCREEN ---
+//
+// All'apertura: "Accedi" o "Registrati". L'area pilota si sceglie solo nella
+// registrazione ed e' legata all'account: per cambiarla si elimina l'account
+// (in fondo a SOS) e ci si registra di nuovo.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -284,213 +718,216 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final TextEditingController _userController = TextEditingController();
-  final TextEditingController _passController = TextEditingController();
+  static final RegExp _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$');
 
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passController = TextEditingController();
+  final TextEditingController _confirmController = TextEditingController();
+
+  _AccessMode _mode = _AccessMode.choose;
   PilotArea? _selectedArea;
+  bool _busy = false;
+
+  bool get _isRegister => _mode == _AccessMode.register;
 
   @override
   void initState() {
     super.initState();
-    // Se l'utente aveva gia' scelto un'area, la ritroviamo preselezionata.
     _selectedArea = selectedPilotArea.value;
   }
 
-  /// Selezionare l'area cambia subito la lingua dell'intera app.
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passController.dispose();
+    _confirmController.dispose();
+    super.dispose();
+  }
+
+  void _setMode(_AccessMode mode) {
+    setState(() {
+      _mode = mode;
+      _confirmController.clear();
+    });
+  }
+
+  /// In registrazione, scegliere l'area cambia subito la lingua dell'app.
   void _onAreaChanged(PilotArea? area) {
     setState(() => _selectedArea = area);
     if (area == null) return;
     AppPrefs.setArea(area);
-    // Il server iscrive al topic della nuova zona e disiscrive dalla vecchia.
-    PushService.registerForArea(area.id);
+    AuthService.setLanguage(area.locale.languageCode);
   }
 
-  void _doLogin() {
-    if (_formKey.currentState!.validate()) {
-      // Simula il login e passa alla Home
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const HomePage()),
+  String? _validateEmail(String? value, AppLocalizations l10n) {
+    final email = value?.trim() ?? '';
+    return _emailPattern.hasMatch(email) ? null : l10n.t('login_email_error');
+  }
+
+  /// Dopo login o registrazione l'area arriva dal profilo sul backend.
+  void _continue() {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const ProfileGate()),
+    );
+  }
+
+  /// Registrazione: l'area scelta va nel profilo. Se il backend non risponde
+  /// ci riprova ProfileGate, con l'area gia' preselezionata.
+  Future<void> _saveChosenArea() async {
+    final area = _selectedArea;
+    if (area == null) return;
+    try {
+      await ApiClient.setProfileArea(area.id);
+    } catch (e) {
+      debugPrint('[profilo] area non salvata subito: $e');
+    }
+  }
+
+  Future<void> _submit() async {
+    if (_busy || !_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    try {
+      final email = _emailController.text;
+      final password = _passController.text;
+      if (_isRegister) {
+        await AuthService.register(email, password);
+        await _saveChosenArea();
+      } else {
+        await AuthService.signIn(email, password);
+      }
+      if (mounted) _continue();
+    } catch (e) {
+      if (mounted) _showAuthError(context, e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Con Google non servono email e password. In registrazione serve l'area;
+  /// in accesso, se l'account non ha ancora un'area, la chiede ProfileGate.
+  Future<void> _googleSignIn() async {
+    if (_busy) return;
+    if (_isRegister && _selectedArea == null) {
+      final l10n = AppLocalizations.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.t('login_select_area_error'))),
       );
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final user = await AuthService.signInWithGoogle();
+      if (user == null || !mounted) return;
+      if (_isRegister) await _saveChosenArea();
+      if (mounted) _continue();
+    } catch (e) {
+      if (mounted) _showAuthError(context, e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _forgotPassword() async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final emailError = _validateEmail(_emailController.text, l10n);
+    if (emailError != null) {
+      messenger.showSnackBar(SnackBar(content: Text(emailError)));
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await AuthService.sendPasswordReset(_emailController.text);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(l10n.t('login_reset_sent')),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (mounted) _showAuthError(context, e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    return Scaffold(
-      body: Container(
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Colors.white, Color(0xFF89F7FE), Color(0xFF66A6FF)],
-            stops: [0.0, 0.35, 1.0],
-          ),
-        ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 40),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  const SizedBox(height: 40),
-                  // Logo
-                  SizedBox(
-                    height: 100,
-                    child: Image.asset(
-                      'assets/PRIMES_MAP.png',
-                      fit: BoxFit.contain,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    l10n.t('login_welcome'),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w900,
-                      color: Color(0xFF0D47A1),
-                    ),
-                  ),
-
-                  const SizedBox(height: 50),
-
-                  // 1. Selezione Zona (Dropdown)
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.9),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black12,
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
-                    child: DropdownButtonFormField<PilotArea>(
-                      initialValue: _selectedArea,
-                      dropdownColor: Colors.white,
-                      decoration: InputDecoration(
-                        border: InputBorder.none,
-                        prefixIcon: const Icon(
-                          Icons.location_on,
-                          color: Color(0xFF0D47A1),
-                        ),
-                        labelText: l10n.t('login_select_area'),
-                        labelStyle: const TextStyle(color: Colors.black54),
-                      ),
-                      isExpanded: true,
-                      items: pilotAreas.map((PilotArea area) {
-                        return DropdownMenuItem<PilotArea>(
-                          value: area,
-                          child: Row(
-                            children: [
-                              _LanguageBadge(code: area.languageBadge),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  area.displayName,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.black87,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
+    return PopScope(
+      // Indietro dal modulo torna alla scelta Accedi / Registrati.
+      canPop: _mode == _AccessMode.choose,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _setMode(_AccessMode.choose);
+      },
+      child: Scaffold(
+        body: Container(
+          height: double.infinity,
+          decoration: _authBackground,
+          child: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 24),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      height: 48,
+                      child: _mode == _AccessMode.choose
+                          ? null
+                          : Align(
+                              alignment: Alignment.centerLeft,
+                              child: IconButton(
+                                tooltip: l10n.t('common_back'),
+                                icon: const Icon(
+                                  Icons.arrow_back,
+                                  color: Color(0xFF0D47A1),
                                 ),
+                                onPressed: _busy
+                                    ? null
+                                    : () => _setMode(_AccessMode.choose),
                               ),
-                            ],
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: _onAreaChanged,
-                      validator: (value) => value == null
-                          ? l10n.t('login_select_area_error')
-                          : null,
+                            ),
                     ),
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    child: Text(
-                      l10n.t('login_language_hint'),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blueGrey.shade700,
+                    SizedBox(
+                      height: 100,
+                      child: Image.asset(
+                        'assets/PRIMES_MAP.png',
+                        fit: BoxFit.contain,
                       ),
                     ),
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  // 2. Username
-                  _buildTextField(
-                    controller: _userController,
-                    label: l10n.t('login_username'),
-                    icon: Icons.person,
-                    validator: (v) =>
-                        v!.isEmpty ? l10n.t('login_username_error') : null,
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  _buildTextField(
-                    controller: _passController,
-                    label: l10n.t('login_password'),
-                    icon: Icons.lock,
-                    isPassword: true,
-                    validator: (v) =>
-                        v!.isEmpty ? l10n.t('login_password_error') : null,
-                  ),
-
-                  const SizedBox(height: 40),
-
-                  // Bottone Login
-                  SizedBox(
-                    width: double.infinity,
-                    height: 55,
-                    child: ElevatedButton(
-                      onPressed: _doLogin,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0D47A1),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        elevation: 5,
-                      ),
-                      child: Text(
-                        l10n.t('login_button'),
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1,
-                        ),
+                    const SizedBox(height: 20),
+                    Text(
+                      _mode == _AccessMode.choose
+                          ? l10n.t('login_welcome')
+                          : l10n.t(
+                              _isRegister ? 'register_title' : 'login_title',
+                            ),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF0D47A1),
                       ),
                     ),
-                  ),
-
-                  const SizedBox(height: 40),
-
-                  // Footer Logo
-                  SizedBox(
-                    height: 120,
-                    child: Image.asset(
-                      'assets/Logo_interreg_PRIMES.png',
-                      fit: BoxFit.contain,
+                    const SizedBox(height: 40),
+                    if (_mode == _AccessMode.choose)
+                      ..._choiceButtons(l10n)
+                    else
+                      ..._form(l10n),
+                    const SizedBox(height: 28),
+                    SizedBox(
+                      height: 120,
+                      child: Image.asset(
+                        'assets/Logo_interreg_PRIMES.png',
+                        fit: BoxFit.contain,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -499,22 +936,190 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  List<Widget> _choiceButtons(AppLocalizations l10n) => [
+    const SizedBox(height: 20),
+    _primaryButton(
+      label: l10n.t('login_button'),
+      onPressed: () => _setMode(_AccessMode.login),
+    ),
+    const SizedBox(height: 16),
+    SizedBox(
+      width: double.infinity,
+      height: 55,
+      child: OutlinedButton(
+        onPressed: () => _setMode(_AccessMode.register),
+        style: OutlinedButton.styleFrom(
+          backgroundColor: Colors.white.withValues(alpha: 0.9),
+          foregroundColor: const Color(0xFF0D47A1),
+          side: const BorderSide(color: Color(0xFF0D47A1), width: 2),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        child: Text(
+          l10n.t('register_choice'),
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1,
+          ),
+        ),
+      ),
+    ),
+    const SizedBox(height: 20),
+  ];
+
+  List<Widget> _form(AppLocalizations l10n) => [
+    if (_isRegister) ...[
+      _pilotAreaDropdown(
+        l10n: l10n,
+        value: _selectedArea,
+        onChanged: _onAreaChanged,
+      ),
+      const SizedBox(height: 8),
+      _areaHints(l10n),
+      const SizedBox(height: 20),
+    ],
+
+    // Email: e' anche l'indirizzo con cui gli operatori raggiungono l'utente
+    // dalle liste dei destinatari.
+    _buildTextField(
+      controller: _emailController,
+      label: l10n.t('login_email'),
+      icon: Icons.email_outlined,
+      keyboardType: TextInputType.emailAddress,
+      autofillHints: const [AutofillHints.email],
+      validator: (v) => _validateEmail(v, l10n),
+    ),
+    const SizedBox(height: 20),
+    _buildTextField(
+      controller: _passController,
+      label: l10n.t('login_password'),
+      icon: Icons.lock,
+      isPassword: true,
+      autofillHints: [
+        _isRegister ? AutofillHints.newPassword : AutofillHints.password,
+      ],
+      validator: (v) {
+        if (v == null || v.isEmpty) return l10n.t('login_password_error');
+        if (_isRegister && v.length < AuthService.minPasswordLength) {
+          return l10n.f('login_password_short', {
+            'min': AuthService.minPasswordLength,
+          });
+        }
+        return null;
+      },
+    ),
+    if (_isRegister) ...[
+      const SizedBox(height: 20),
+      _buildTextField(
+        controller: _confirmController,
+        label: l10n.t('login_password_confirm'),
+        icon: Icons.lock_outline,
+        isPassword: true,
+        autofillHints: const [AutofillHints.newPassword],
+        validator: (v) => v != _passController.text
+            ? l10n.t('login_password_mismatch')
+            : null,
+      ),
+    ],
+    if (!_isRegister)
+      Align(
+        alignment: Alignment.centerRight,
+        child: TextButton(
+          onPressed: _busy ? null : _forgotPassword,
+          child: Text(
+            l10n.t('login_forgot_password'),
+            style: const TextStyle(color: Color(0xFF0D47A1)),
+          ),
+        ),
+      ),
+    SizedBox(height: _isRegister ? 40 : 20),
+    _primaryButton(
+      label: l10n.t(_isRegister ? 'register_button' : 'login_button'),
+      onPressed: _busy ? null : _submit,
+      busy: _busy,
+    ),
+    const SizedBox(height: 16),
+    Row(
+      children: [
+        const Expanded(child: Divider(color: Colors.white70)),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            l10n.t('login_or'),
+            style: const TextStyle(color: Color(0xFF0D47A1)),
+          ),
+        ),
+        const Expanded(child: Divider(color: Colors.white70)),
+      ],
+    ),
+    const SizedBox(height: 16),
+    SizedBox(
+      width: double.infinity,
+      height: 55,
+      child: OutlinedButton.icon(
+        onPressed: _busy ? null : _googleSignIn,
+        style: OutlinedButton.styleFrom(
+          backgroundColor: Colors.white,
+          foregroundColor: const Color(0xFF1F1F1F),
+          side: const BorderSide(color: Color(0xFF747775)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        icon: const Text(
+          'G',
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF4285F4),
+          ),
+        ),
+        label: Text(
+          l10n.t(_isRegister ? 'register_google' : 'login_google'),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+      ),
+    ),
+    const SizedBox(height: 12),
+    TextButton(
+      onPressed: _busy
+          ? null
+          : () => _setMode(
+              _isRegister ? _AccessMode.login : _AccessMode.register,
+            ),
+      child: Text(
+        l10n.t(
+          _isRegister ? 'login_switch_to_login' : 'login_switch_to_register',
+        ),
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          color: Color(0xFF0D47A1),
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    ),
+  ];
+
   Widget _buildTextField({
     required TextEditingController controller,
     required String label,
     required IconData icon,
     bool isPassword = false,
+    TextInputType? keyboardType,
+    Iterable<String>? autofillHints,
     String? Function(String?)? validator,
   }) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.9),
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
+        boxShadow: const [
           BoxShadow(
             color: Colors.black12,
             blurRadius: 10,
-            offset: const Offset(0, 4),
+            offset: Offset(0, 4),
           ),
         ],
       ),
@@ -522,12 +1127,402 @@ class _LoginScreenState extends State<LoginScreen> {
       child: TextFormField(
         controller: controller,
         obscureText: isPassword,
+        keyboardType: keyboardType,
+        autocorrect: !isPassword && keyboardType == null,
+        autofillHints: autofillHints,
         validator: validator,
         decoration: InputDecoration(
           border: InputBorder.none,
           prefixIcon: Icon(icon, color: Colors.grey),
           labelText: label,
           labelStyle: const TextStyle(color: Colors.black54),
+        ),
+      ),
+    );
+  }
+}
+
+// --- AREA DEL PROFILO ---
+//
+// Passaggio obbligato dopo ogni accesso: l'area pilota si legge dal profilo
+// sul backend, non dal telefono. Se l'account non ne ha ancora una (per
+// esempio chi entra con Google senza essersi registrato) la si sceglie qui,
+// una volta sola.
+class ProfileGate extends StatefulWidget {
+  const ProfileGate({super.key});
+
+  @override
+  State<ProfileGate> createState() => _ProfileGateState();
+}
+
+class _ProfileGateState extends State<ProfileGate> {
+  final _formKey = GlobalKey<FormState>();
+  bool _loading = true;
+  bool _failed = false;
+  bool _needsArea = false;
+  bool _busy = false;
+  PilotArea? _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = selectedPilotArea.value;
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _failed = false;
+    });
+    try {
+      final area = pilotAreaById(await ApiClient.profileAreaId());
+      if (!mounted) return;
+      if (area != null) {
+        await _enter(area);
+        return;
+      }
+      setState(() {
+        _needsArea = true;
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('[profilo] non letto: $e');
+      if (mounted) {
+        setState(() {
+          _failed = true;
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _enter(PilotArea area) async {
+    await AppPrefs.setArea(area);
+    await AuthService.setLanguage(area.locale.languageCode);
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AuthService.isEmailVerified
+            ? const HomePage()
+            : const VerifyEmailScreen(),
+      ),
+    );
+  }
+
+  Future<void> _confirm() async {
+    final chosen = _selected;
+    if (_busy || chosen == null || !_formKey.currentState!.validate()) return;
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final saved = pilotAreaById(await ApiClient.setProfileArea(chosen.id));
+      if (saved == null) throw StateError('area sconosciuta');
+      if (saved.id != chosen.id) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              l10n.f('profile_area_locked', {'area': saved.displayName}),
+            ),
+          ),
+        );
+      }
+      await _enter(saved);
+    } catch (e) {
+      debugPrint('[profilo] area non salvata: $e');
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(l10n.t('auth_error_profile')),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signOut() async {
+    await AuthService.signOut();
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return Scaffold(
+      body: Container(
+        height: double.infinity,
+        decoration: _authBackground,
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 60),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                children: [
+                  SizedBox(
+                    height: 100,
+                    child: Image.asset(
+                      'assets/PRIMES_MAP.png',
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                  const SizedBox(height: 40),
+                  if (_loading)
+                    const Padding(
+                      padding: EdgeInsets.all(40),
+                      child: CircularProgressIndicator(),
+                    )
+                  else if (_failed) ...[
+                    Text(
+                      l10n.t('auth_error_profile'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        color: Color(0xFF1E293B),
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+                    _primaryButton(
+                      label: l10n.t('common_retry'),
+                      onPressed: _load,
+                    ),
+                  ] else if (_needsArea) ...[
+                    Text(
+                      l10n.t('profile_complete_title'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF0D47A1),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      l10n.t('profile_complete_body'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        height: 1.5,
+                        color: Color(0xFF1E293B),
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+                    _pilotAreaDropdown(
+                      l10n: l10n,
+                      value: _selected,
+                      onChanged: (area) {
+                        setState(() => _selected = area);
+                        if (area != null) AppPrefs.setArea(area);
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    _areaHints(l10n),
+                    const SizedBox(height: 30),
+                    _primaryButton(
+                      label: l10n.t('profile_complete_button'),
+                      onPressed: _busy ? null : _confirm,
+                      busy: _busy,
+                    ),
+                  ],
+                  if (!_loading) ...[
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: _busy ? null : _signOut,
+                      child: Text(
+                        l10n.t('verify_other_account'),
+                        style: const TextStyle(color: Color(0xFF0D47A1)),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// --- CONFERMA EMAIL ---
+//
+// Un account con email non confermata non entra: altrimenti basterebbe
+// registrarsi con l'indirizzo di un altro per ricevere i suoi avvisi mirati.
+class VerifyEmailScreen extends StatefulWidget {
+  const VerifyEmailScreen({super.key});
+
+  @override
+  State<VerifyEmailScreen> createState() => _VerifyEmailScreenState();
+}
+
+class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
+  bool _busy = false;
+
+  Future<void> _check() async {
+    final l10n = AppLocalizations.of(context);
+    setState(() => _busy = true);
+    try {
+      final verified = await AuthService.reloadVerification();
+      if (!mounted) return;
+      if (verified) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const HomePage()),
+        );
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l10n.t('verify_not_yet'))));
+      }
+    } catch (e) {
+      if (mounted) _showAuthError(context, e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _resend() async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      await AuthService.resendVerification();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(l10n.t('verify_resent')),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (mounted) _showAuthError(context, e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _useAnotherAccount() async {
+    await AuthService.signOut();
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final email = AuthService.currentUser?.email ?? '';
+    return Scaffold(
+      body: Container(
+        height: double.infinity,
+        decoration: _authBackground,
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 60),
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.9),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.mark_email_unread_outlined,
+                    size: 64,
+                    color: Color(0xFF0D47A1),
+                  ),
+                ),
+                const SizedBox(height: 30),
+                Text(
+                  l10n.t('verify_title'),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF0D47A1),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  l10n.f('verify_body', {'email': email}),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    height: 1.5,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  l10n.t('verify_spam_hint'),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.blueGrey.shade700,
+                  ),
+                ),
+                const SizedBox(height: 40),
+                SizedBox(
+                  width: double.infinity,
+                  height: 55,
+                  child: ElevatedButton(
+                    onPressed: _busy ? null : _check,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0D47A1),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    child: _busy
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Text(
+                            l10n.t('verify_done'),
+                            style: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: _busy ? null : _resend,
+                  child: Text(
+                    l10n.t('verify_resend'),
+                    style: const TextStyle(
+                      color: Color(0xFF0D47A1),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : _useAnotherAccount,
+                  child: Text(
+                    l10n.t('verify_other_account'),
+                    style: const TextStyle(color: Color(0xFF0D47A1)),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -573,7 +1568,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   WebSocketChannel? _channel;
   StreamSubscription? _wsSubscription;
   Timer? _reconnectTimer;
@@ -583,8 +1578,36 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // La Home esiste solo con un utente loggato: e' qui che il dispositivo
+    // viene registrato per ricevere le notifiche della sua area.
+    final area = selectedPilotArea.value;
+    if (area != null) PushService.registerForArea(area.id);
+    final uid = AuthService.currentUser?.uid;
+    if (uid != null) Attachments.load(uid);
     _loadFromBackend();
+    _checkProfileArea();
     _connectWebSocket();
+
+    notificaDaAprire.addListener(_openPendingNotification);
+    // L'app aperta toccando una notifica: il dettaglio va sopra la Home.
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _openPendingNotification(),
+    );
+  }
+
+  /// Rientrando dal background lo storico puo' essere cambiato: le push
+  /// arrivate intanto, e le notifiche lette o eliminate da un altro telefono.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _loadFromBackend();
+  }
+
+  void _openPendingNotification() {
+    final notif = notificaDaAprire.value;
+    if (notif == null || !mounted) return;
+    notificaDaAprire.value = null;
+    openNotificationDetail(context, notif);
   }
 
   /// Stato iniziale letto dal backend: livello di allerta e storico avvisi.
@@ -606,11 +1629,8 @@ class _HomePageState extends State<HomePage> {
       debugPrint('[api] livello non caricato: $e');
     }
     try {
-      final list = await ApiClient.notifications(area.id, limit: 50);
-      if (!mounted || list.isEmpty) return;
-      notificheSalvate.value = list
-          .map((n) => AppNotification.fromJson(n))
-          .toList();
+      if (!mounted) return;
+      await loadNotifications(area.id);
     } catch (e) {
       debugPrint('[api] notifiche non caricate: $e');
     }
@@ -636,6 +1656,15 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// Chiude la connessione senza far scattare la riconnessione automatica.
+  void _closeWebSocket() {
+    _reconnectTimer?.cancel();
+    _wsSubscription?.cancel();
+    _wsSubscription = null;
+    _channel?.sink.close();
+    _channel = null;
+  }
+
   /// Riconnessione con backoff esponenziale (2s, 4s, 8s... max 60s).
   ///
   /// Serve davvero: su Cloud Run la connessione ha comunque una durata massima
@@ -657,16 +1686,12 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  /// Il WebSocket porta solo il livello di allerta, che e' pubblico. Le
+  /// notifiche arrivano solo via push, ai dispositivi degli utenti loggati.
   void _handleSocketEvent(dynamic event) {
     try {
       final parsed = jsonDecode(event.toString()) as Map<String, dynamic>;
-      if (parsed['event'] == 'notification') {
-        final AppNotification notif = AppNotification.fromJson(
-          Map<String, dynamic>.from(parsed['data'] as Map),
-        );
-        notificheSalvate.value = [notif, ...notificheSalvate.value];
-        showLocalNotification(notif);
-      } else if (parsed['event'] == 'alert_level_change') {
+      if (parsed['event'] == 'alert_level_change') {
         final data = Map<String, dynamic>.from(parsed['data'] as Map);
         currentAlertLevel.value = _alertStateFrom(
           key: data['key']?.toString(),
@@ -682,22 +1707,78 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _disposed = true;
-    _reconnectTimer?.cancel();
-    _wsSubscription?.cancel();
-    _channel?.sink.close();
+    WidgetsBinding.instance.removeObserver(this);
+    notificaDaAprire.removeListener(_openPendingNotification);
+    _closeWebSocket();
     super.dispose();
   }
 
-  void _changeArea() async {
-    await AppPrefs.clearArea();
+  /// L'area vale quella del profilo sul backend: se sul telefono ne e' rimasta
+  /// un'altra (per esempio da un account precedente) si riallinea. Senza
+  /// profilo si torna alla scelta dell'area. Offline si resta come si e'.
+  Future<void> _checkProfileArea() async {
+    try {
+      final area = pilotAreaById(await ApiClient.profileAreaId());
+      if (!mounted) return;
+      if (area == null) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => const ProfileGate()),
+          (route) => false,
+        );
+        return;
+      }
+      if (area.id == selectedPilotArea.value?.id) return;
+      await AppPrefs.setArea(area);
+      await AuthService.setLanguage(area.locale.languageCode);
+      currentAlertLevel.value = const AlertLevelState.unknown();
+      clearNotificationsState();
+      _closeWebSocket();
+      _connectWebSocket();
+      PushService.registerForArea(area.id);
+      await _loadFromBackend();
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('[profilo] verifica area non riuscita: $e');
+    }
+  }
+
+  /// Logout: il dispositivo smette di ricevere notifiche finche' non si
+  /// rientra.
+  Future<void> _logout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        final l10n = AppLocalizations.of(context);
+        return AlertDialog(
+          title: Text(l10n.t('logout_confirm_title')),
+          content: Text(l10n.t('logout_confirm_body')),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(l10n.t('common_cancel')),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(l10n.t('home_logout')),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+
     _disposed = true;
-    _reconnectTimer?.cancel();
-    _wsSubscription?.cancel();
-    _channel?.sink.close();
+    _closeWebSocket();
+    // Prima si toglie il dispositivo dal backend, finche' c'e' la sessione.
+    await PushService.unregister();
+    await AuthService.signOut();
+    clearNotificationsState();
+    Attachments.clear();
+    currentAlertLevel.value = const AlertLevelState.unknown();
     if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
+    Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (context) => const LoginScreen()),
+      (route) => false,
     );
   }
 
@@ -728,7 +1809,11 @@ class _HomePageState extends State<HomePage> {
                 ),
                 child: Row(
                   children: [
-                    const SizedBox(width: 48),
+                    IconButton(
+                      tooltip: l10n.t('home_logout'),
+                      icon: const Icon(Icons.logout, color: Color(0xFF0D47A1)),
+                      onPressed: _logout,
+                    ),
                     Expanded(
                       child: SizedBox(
                         height: 90,
@@ -740,14 +1825,8 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                     ),
-                    IconButton(
-                      tooltip: l10n.t('home_change_area'),
-                      icon: const Icon(
-                        Icons.travel_explore,
-                        color: Color(0xFF0D47A1),
-                      ),
-                      onPressed: _changeArea,
-                    ),
+                    // L'area e' quella del profilo: non si cambia da qui.
+                    const SizedBox(width: 48),
                   ],
                 ),
               ),
@@ -772,11 +1851,7 @@ class _HomePageState extends State<HomePage> {
                             ),
                           ),
                           child: AlertStatusCard(
-                            // Finche' il backend non risponde non si inventa
-                            // un livello: si dice che non e' disponibile.
-                            level: alertState.label.isEmpty
-                                ? l10n.t('alert_level_unknown')
-                                : alertState.label,
+                            level: alertState.labelFor(l10n),
                             color: alertState.color,
                             statusLabel: l10n.t('home_alert_status'),
                             // Se il referente ha indicato un nome ufficiale
@@ -809,8 +1884,7 @@ class _HomePageState extends State<HomePage> {
                         ValueListenableBuilder<List<AppNotification>>(
                           valueListenable: notificheSalvate,
                           builder: (context, list, _) {
-                            final count =
-                                list.where((n) => !n.isRead).length;
+                            final count = list.where((n) => !n.isRead).length;
                             return _buildModernMenuCard(
                               context,
                               l10n.t('menu_notifications'),
@@ -1034,13 +2108,13 @@ class AlertStatusCard extends StatelessWidget {
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
-                          zoneLabel,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: color.withValues(alpha: 0.9),
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                          ),
+                            zoneLabel,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: color.withValues(alpha: 0.9),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
                           ),
                         ),
                       ],
@@ -1080,16 +2154,20 @@ class _DocumentiScreenState extends State<DocumentiScreen> {
     });
   }
 
-  void _deleteSelected() {
+  Future<void> _deleteSelected() async {
     final l10n = AppLocalizations.of(context);
-    final currentList = List<Map<String, String>>.from(archivioDocumenti.value);
-    currentList.removeWhere((doc) => _selectedFiles.contains(doc['nome']));
-    archivioDocumenti.value = currentList;
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    final count = _selectedFiles.length;
+    // Via dall'elenco e dal telefono.
+    await Attachments.delete(
+      archivioDocumenti.value.where(
+        (doc) => _selectedFiles.contains(doc['path']),
+      ),
+    );
+    if (!mounted) return;
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(
-          l10n.f('documents_deleted', {'count': _selectedFiles.length}),
-        ),
+        content: Text(l10n.f('documents_deleted', {'count': count})),
         backgroundColor: Colors.redAccent,
         duration: const Duration(seconds: 2),
       ),
@@ -1226,9 +2304,9 @@ class _DocumentiScreenState extends State<DocumentiScreen> {
           if (await AreaLinks.openDocument(doc)) return;
           messenger.showSnackBar(
             SnackBar(
-              content: Text(l10n.f('documents_open_failed', {
-                'name': doc.fileName,
-              })),
+              content: Text(
+                l10n.f('documents_open_failed', {'name': doc.fileName}),
+              ),
               backgroundColor: Colors.redAccent,
             ),
           );
@@ -1245,7 +2323,11 @@ class _DocumentiScreenState extends State<DocumentiScreen> {
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
-              doc.isPdf ? Icons.picture_as_pdf : Icons.image_outlined,
+              doc.isPdf
+                  ? Icons.picture_as_pdf
+                  : doc.isImage
+                  ? Icons.image_outlined
+                  : Icons.description_outlined,
               color: doc.isPdf
                   ? const Color(0xFFD32F2F)
                   : const Color(0xFF0D47A1),
@@ -1270,23 +2352,33 @@ class _DocumentiScreenState extends State<DocumentiScreen> {
     );
   }
 
-  /// Un allegato scaricato da una notifica: selezionabile e cancellabile.
+  /// Un allegato scaricato da una notifica: si apre con il visualizzatore di
+  /// sistema; selezionabile e cancellabile.
   Widget _downloadedDocCard(BuildContext context, Map<String, String> doc) {
     final l10n = AppLocalizations.of(context);
     final nome = doc['nome']!;
-    final isSelected = _selectedFiles.contains(nome);
+    // La selezione va per file, non per nome: due allegati possono chiamarsi
+    // allo stesso modo.
+    final id = doc['path'] ?? nome;
+    final isSelected = _selectedFiles.contains(id);
+    final (icon, color) = fileIconFor(nome);
 
     return GestureDetector(
-      onLongPress: () => _toggleSelection(nome),
-      onTap: () {
+      onLongPress: () => _toggleSelection(id),
+      onTap: () async {
         if (_isSelectionMode) {
-          _toggleSelection(nome);
-        } else {
-          // Gli allegati delle notifiche non sono ancora scaricati su disco:
-          // quando lo saranno, qui si aprira' il file come per i documenti
-          // ufficiali dell'area.
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.f('documents_opening', {'name': nome}))),
+          _toggleSelection(id);
+          return;
+        }
+        final messenger = ScaffoldMessenger.of(context);
+        try {
+          await Attachments.open(doc);
+        } catch (e) {
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(attachmentErrorText(l10n, e, nome)),
+              backgroundColor: Colors.redAccent,
+            ),
           );
         }
       },
@@ -1313,14 +2405,10 @@ class _DocumentiScreenState extends State<DocumentiScreen> {
               : Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.red[50],
+                    color: color.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(
-                    Icons.picture_as_pdf,
-                    color: Color(0xFFD32F2F),
-                    size: 32,
-                  ),
+                  child: Icon(icon, color: color, size: 32),
                 ),
           title: Text(
             nome,
@@ -1346,12 +2434,15 @@ class _DocumentiScreenState extends State<DocumentiScreen> {
   }
 }
 
-class NotificationDetailScreen extends StatelessWidget {
+class NotificationDetailScreen extends StatefulWidget {
   final String title;
   final String body;
   final String time;
   final bool isUrgent;
   final String? attachmentName;
+
+  /// Da dove scaricare l'allegato (backend PRIMES).
+  final String? documentUrl;
   const NotificationDetailScreen({
     super.key,
     required this.title,
@@ -1359,10 +2450,63 @@ class NotificationDetailScreen extends StatelessWidget {
     required this.time,
     required this.isUrgent,
     this.attachmentName,
+    this.documentUrl,
   });
+
+  @override
+  State<NotificationDetailScreen> createState() =>
+      _NotificationDetailScreenState();
+}
+
+class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
+  bool _busy = false;
+
+  /// Scarica l'allegato (se non c'e' gia') e lo apre subito.
+  Future<void> _openAttachment() async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final name = widget.attachmentName!;
+    final url = widget.documentUrl;
+    if (url == null) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(l10n.t('notification_attachment_unavailable'))),
+      );
+      return;
+    }
+    final alreadyThere = Attachments.downloaded(url) != null;
+    setState(() => _busy = true);
+    try {
+      final doc = await Attachments.download(url: url, name: name);
+      if (!alreadyThere) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(l10n.t('notification_downloaded')),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      await Attachments.open(doc);
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(attachmentErrorText(l10n, e, name)),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
+    final isUrgent = widget.isUrgent;
+    final title = widget.title;
+    final body = widget.body;
+    final time = widget.time;
+    final attachmentName = widget.attachmentName;
     Color themeColor = isUrgent
         ? const Color(0xFFD32F2F)
         : const Color(0xFF0D47A1);
@@ -1433,92 +2577,137 @@ class NotificationDetailScreen extends StatelessWidget {
             ),
             if (attachmentName != null) ...[
               const SizedBox(height: 40),
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l10n.t('notification_attachment_title'),
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey,
-                      ),
-                    ),
-                    const SizedBox(height: 15),
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.picture_as_pdf,
-                          color: Colors.red,
-                          size: 40,
-                        ),
-                        const SizedBox(width: 15),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                attachmentName!,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const Text(
-                                "PDF • 1.2 MB",
-                                style: TextStyle(
-                                  color: Colors.grey,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: () {
-                          aggiungiDocumento(attachmentName!, "1.2 MB");
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(l10n.t('notification_downloaded')),
-                              backgroundColor: Colors.green,
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.download_rounded),
-                        label: Text(l10n.t('notification_download')),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0D47A1),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              _attachmentBox(l10n, attachmentName),
             ],
           ],
         ),
       ),
     );
   }
+
+  Widget _attachmentBox(AppLocalizations l10n, String name) {
+    final (icon, color) = fileIconFor(name);
+    return ValueListenableBuilder<List<Map<String, String>>>(
+      valueListenable: archivioDocumenti,
+      builder: (context, _, _) {
+        final downloaded = Attachments.downloaded(widget.documentUrl);
+        return Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF1F5F9),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.t('notification_attachment_title'),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey,
+                ),
+              ),
+              const SizedBox(height: 15),
+              Row(
+                children: [
+                  Icon(icon, color: color, size: 40),
+                  const SizedBox(width: 15),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        if (downloaded != null)
+                          Text(
+                            downloaded['dim'] ?? '',
+                            style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 13,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _busy ? null : _openAttachment,
+                  icon: _busy
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Icon(
+                          downloaded != null
+                              ? Icons.visibility
+                              : Icons.download_rounded,
+                        ),
+                  label: Text(
+                    l10n.t(
+                      downloaded != null
+                          ? 'notification_open_document'
+                          : 'notification_download',
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0D47A1),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: const Color(
+                      0xFF0D47A1,
+                    ).withValues(alpha: 0.6),
+                    disabledForegroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
 
+/// Apre il dettaglio di una notifica e la segna come letta.
+void openNotificationDetail(BuildContext context, AppNotification item) {
+  markNotificationsRead([item]);
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => NotificationDetailScreen(
+        title: item.title,
+        body: item.body,
+        time: item.time,
+        isUrgent: item.isUrgent,
+        attachmentName: item.attachmentName,
+        documentUrl: item.documentUrl,
+      ),
+    ),
+  );
+}
+
+// --- NOTIFICHE ---
+//
+// Pressione prolungata per selezionare, come nei Documenti. Con una selezione
+// attiva la barra in alto offre: seleziona tutte, segna come lette, elimina.
 class NotificheScreen extends StatefulWidget {
   const NotificheScreen({super.key});
   @override
@@ -1526,113 +2715,268 @@ class NotificheScreen extends StatefulWidget {
 }
 
 class _NotificheScreenState extends State<NotificheScreen> {
-  void _markAsRead(AppNotification item) {
-    if (!item.isRead) {
-      item.isRead = true;
-      notificheSalvate.value = [...notificheSalvate.value];
+  final Set<String> _selected = {};
+  bool get _isSelectionMode => _selected.isNotEmpty;
+
+  void _toggleSelection(AppNotification item) {
+    setState(() {
+      if (!_selected.remove(item.key)) _selected.add(item.key);
+    });
+  }
+
+  List<AppNotification> get _selectedItems =>
+      notificheSalvate.value.where((n) => _selected.contains(n.key)).toList();
+
+  Future<void> _refresh() async {
+    final area = selectedPilotArea.value;
+    if (area == null) return;
+    try {
+      await loadNotifications(area.id);
+    } catch (_) {
+      if (!mounted) return;
+      _showError();
     }
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(notificheSalvate.value.map((n) => n.key));
+    });
+  }
+
+  void _markSelectedRead() {
+    markNotificationsRead(_selectedItems);
+    setState(_selected.clear);
+  }
+
+  Future<void> _deleteSelected() async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final keys = Set<String>.of(_selected);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          l10n.f('notifications_delete_confirm_title', {'count': keys.length}),
+        ),
+        content: Text(l10n.t('notifications_delete_confirm_body')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(l10n.t('common_cancel')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: Text(l10n.t('notifications_delete')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(_selected.clear);
+    try {
+      await deleteNotifications(keys);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            l10n.f('notifications_deleted', {'count': keys.length}),
+          ),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (_) {
+      if (mounted) _showError();
+    }
+  }
+
+  void _showError() {
+    final l10n = AppLocalizations.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(l10n.t('notifications_action_failed')),
+        backgroundColor: Colors.redAccent,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    return Scaffold(
-      appBar: AppBar(title: Text(l10n.t('notifications_title'))),
-      body: ValueListenableBuilder<List<AppNotification>>(
-        valueListenable: notificheSalvate,
-        builder: (context, list, _) {
-          if (list.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.notifications_off_outlined,
-                      size: 80,
-                      color: Colors.grey[300],
-                    ),
-                    const SizedBox(height: 20),
-                    Text(
-                      l10n.t('notifications_empty_title'),
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      l10n.t('notifications_empty_body'),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
+    return ValueListenableBuilder<List<AppNotification>>(
+      valueListenable: notificheSalvate,
+      builder: (context, list, _) {
+        // Una notifica selezionata puo' sparire (eliminata altrove, cambio
+        // area): la selezione non deve restare appesa a nulla.
+        _selected.removeWhere((key) => !list.any((n) => n.key == key));
+        final hasUnread = list.any((n) => !n.isRead);
 
-          return ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: list.length,
-            itemBuilder: (context, index) {
-              final item = list[index];
-              return _buildItem(context, item);
-            },
-          );
-        },
-      ),
+        return PopScope(
+          // Il tasto indietro prima chiude la selezione, poi la schermata.
+          canPop: !_isSelectionMode,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) setState(_selected.clear);
+          },
+          child: Scaffold(
+            appBar: _isSelectionMode
+                ? _selectionAppBar(l10n, list.length)
+                : AppBar(
+                    title: Text(l10n.t('notifications_title')),
+                    actions: [
+                      if (hasUnread)
+                        IconButton(
+                          tooltip: l10n.t('notifications_mark_all_read'),
+                          icon: const Icon(Icons.done_all),
+                          onPressed: () => markNotificationsRead(list),
+                        ),
+                    ],
+                  ),
+            body: RefreshIndicator(
+              onRefresh: _refresh,
+              child: list.isEmpty
+                  ? _emptyState(l10n)
+                  : ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.all(16),
+                      itemCount: list.length,
+                      itemBuilder: (context, index) =>
+                          _buildItem(context, list[index]),
+                    ),
+            ),
+          ),
+        );
+      },
     );
   }
 
+  PreferredSizeWidget _selectionAppBar(AppLocalizations l10n, int total) {
+    final anyUnread = _selectedItems.any((n) => !n.isRead);
+    return AppBar(
+      backgroundColor: Colors.blueGrey[100],
+      title: Text(
+        l10n.f('notifications_selected', {'count': _selected.length}),
+        style: const TextStyle(
+          color: Colors.black87,
+          fontWeight: FontWeight.w900,
+          fontSize: 20,
+        ),
+      ),
+      leading: IconButton(
+        icon: const Icon(Icons.close, color: Colors.black87),
+        onPressed: () => setState(_selected.clear),
+      ),
+      actions: [
+        if (_selected.length < total)
+          IconButton(
+            tooltip: l10n.t('notifications_select_all'),
+            icon: const Icon(Icons.select_all, color: Colors.black87),
+            onPressed: _selectAll,
+          ),
+        if (anyUnread)
+          IconButton(
+            tooltip: l10n.t('notifications_mark_read'),
+            icon: const Icon(
+              Icons.mark_email_read_outlined,
+              color: Colors.black87,
+            ),
+            onPressed: _markSelectedRead,
+          ),
+        IconButton(
+          tooltip: l10n.t('notifications_delete'),
+          icon: const Icon(Icons.delete_outline, color: Colors.red, size: 30),
+          onPressed: _deleteSelected,
+        ),
+      ],
+    );
+  }
+
+  /// Anche vuota la schermata si puo' trascinare per ricaricare.
+  Widget _emptyState(AppLocalizations l10n) => ListView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    padding: const EdgeInsets.all(20),
+    children: [
+      SizedBox(height: MediaQuery.of(context).size.height * 0.2),
+      Icon(Icons.notifications_off_outlined, size: 80, color: Colors.grey[300]),
+      const SizedBox(height: 20),
+      Text(
+        l10n.t('notifications_empty_title'),
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          color: Colors.grey,
+        ),
+      ),
+      const SizedBox(height: 10),
+      Text(
+        l10n.t('notifications_empty_body'),
+        textAlign: TextAlign.center,
+        style: const TextStyle(color: Colors.grey),
+      ),
+    ],
+  );
+
   Widget _buildItem(BuildContext context, AppNotification item) {
     final l10n = AppLocalizations.of(context);
+    final isSelected = _selected.contains(item.key);
+    final accent = item.isUrgent
+        ? const Color(0xFFD32F2F)
+        : const Color(0xFF0D47A1);
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Material(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        elevation: 2,
+        color: isSelected ? Colors.blue[50] : Colors.white,
+        elevation: isSelected ? 0 : 2,
+        // Gli angoli arrotondati stanno nella shape: Material non accetta
+        // anche borderRadius insieme.
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: isSelected
+              ? const BorderSide(color: Colors.blue, width: 2)
+              : BorderSide.none,
+        ),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
+          onLongPress: () => _toggleSelection(item),
           onTap: () {
-            _markAsRead(item);
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => NotificationDetailScreen(
-                  title: item.title,
-                  body: item.body,
-                  time: item.time,
-                  isUrgent: item.isUrgent,
-                  attachmentName: item.attachmentName,
-                ),
-              ),
-            );
+            if (_isSelectionMode) {
+              _toggleSelection(item);
+            } else {
+              openNotificationDetail(context, item);
+            }
           },
           child: Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(16),
-              gradient: LinearGradient(
-                stops: const [0.02, 0.02],
-                colors: [
-                  item.isUrgent ? const Color(0xFFD32F2F) : const Color(0xFF0D47A1),
-                  Colors.white,
-                ],
-              ),
+              gradient: isSelected
+                  ? null
+                  : LinearGradient(
+                      stops: const [0.02, 0.02],
+                      colors: [accent, Colors.white],
+                    ),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (isSelected)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 14),
+                    child: CircleAvatar(
+                      backgroundColor: Colors.blue,
+                      child: Icon(Icons.check, color: Colors.white),
+                    ),
+                  ),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text(
                             item.isUrgent
@@ -1646,6 +2990,7 @@ class _NotificheScreenState extends State<NotificheScreen> {
                                   : Colors.blue[800],
                             ),
                           ),
+                          const Spacer(),
                           Text(
                             item.time,
                             style: TextStyle(
@@ -1657,13 +3002,37 @@ class _NotificheScreenState extends State<NotificheScreen> {
                         ],
                       ),
                       const SizedBox(height: 8),
-                      Text(
-                        item.title,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 17,
-                          color: Color(0xFF1E293B),
-                        ),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Pallino "da leggere", come quello della Home.
+                          if (!item.isRead)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6, right: 8),
+                              child: Container(
+                                width: 9,
+                                height: 9,
+                                decoration: const BoxDecoration(
+                                  color: Colors.red,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                            ),
+                          Expanded(
+                            child: Text(
+                              item.title,
+                              style: TextStyle(
+                                fontWeight: item.isRead
+                                    ? FontWeight.w600
+                                    : FontWeight.w900,
+                                fontSize: 17,
+                                color: item.isRead
+                                    ? const Color(0xFF475569)
+                                    : const Color(0xFF1E293B),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 6),
                       Text(
@@ -2016,10 +3385,7 @@ class AlertGuidelinesScreen extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: Text(
-            text,
-            style: const TextStyle(fontSize: 14, height: 1.4),
-          ),
+          child: Text(text, style: const TextStyle(fontSize: 14, height: 1.4)),
         ),
       ],
     ),
@@ -2073,6 +3439,23 @@ class SosScreen extends StatelessWidget {
               () => _open(context, contact),
             ),
           if (hours != null && hours.isNotEmpty) _hoursCard(l10n, hours),
+          const SizedBox(height: 40),
+          // In fondo e poco appariscente: e' anche il modo per cambiare area
+          // pilota (si elimina l'account e ci si registra di nuovo).
+          Center(
+            child: TextButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const DeleteAccountScreen(),
+                ),
+              ),
+              icon: const Icon(Icons.person_remove_outlined, size: 20),
+              label: Text(l10n.t('delete_account_link')),
+              style: TextButton.styleFrom(foregroundColor: Colors.red[700]),
+            ),
+          ),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -2149,4 +3532,222 @@ class SosScreen extends StatelessWidget {
       ],
     ),
   );
+}
+
+// --- ELIMINA ACCOUNT ---
+//
+// Si raggiunge dal fondo di SOS. Elimina l'account da Firebase e tutto cio'
+// che il backend sa dell'utente; la stessa email si puo' poi registrare di
+// nuovo, anche su un'altra area pilota.
+class DeleteAccountScreen extends StatefulWidget {
+  const DeleteAccountScreen({super.key});
+
+  @override
+  State<DeleteAccountScreen> createState() => _DeleteAccountScreenState();
+}
+
+class _DeleteAccountScreenState extends State<DeleteAccountScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _reasonController = TextEditingController();
+  bool _understood = false;
+  bool _busy = false;
+
+  String get _accountEmail =>
+      (AuthService.currentUser?.email ?? '').trim().toLowerCase();
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  bool get _canSubmit =>
+      !_busy &&
+      _understood &&
+      _accountEmail.isNotEmpty &&
+      _emailController.text.trim().toLowerCase() == _accountEmail;
+
+  Future<void> _delete() async {
+    if (!_canSubmit || !_formKey.currentState!.validate()) return;
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    setState(() => _busy = true);
+    try {
+      await ApiClient.deleteAccount(reason: _reasonController.text.trim());
+    } catch (e) {
+      debugPrint('[account] eliminazione fallita: $e');
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(l10n.t('delete_account_failed')),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+
+    // L'account non c'e' piu': si ripulisce il telefono.
+    await PushService.forget();
+    await Attachments.deleteAll();
+    await AuthService.signOut();
+    clearNotificationsState();
+    currentAlertLevel.value = const AlertLevelState.unknown();
+    await AppPrefs.clearArea();
+
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+      (route) => false,
+    );
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(l10n.t('delete_account_done')),
+        backgroundColor: Colors.green,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final area = selectedPilotArea.value;
+    return Scaffold(
+      appBar: AppBar(title: Text(l10n.t('delete_account_title'))),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: Colors.red[50],
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.red.shade100),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.warning_amber_rounded, color: Colors.red[700]),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        l10n.t('delete_account_body'),
+                        style: const TextStyle(fontSize: 15, height: 1.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE1F5FE),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  l10n.f('delete_account_area_hint', {
+                    'area': area?.displayName ?? '--',
+                  }),
+                  style: const TextStyle(fontSize: 14, height: 1.5),
+                ),
+              ),
+              const SizedBox(height: 28),
+              Text(
+                l10n.f('delete_account_email_label', {'email': _accountEmail}),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+                autocorrect: false,
+                enabled: !_busy,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: Colors.white,
+                  prefixIcon: const Icon(Icons.email_outlined),
+                ),
+                validator: (v) =>
+                    (v ?? '').trim().toLowerCase() == _accountEmail
+                    ? null
+                    : l10n.t('delete_account_email_mismatch'),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                l10n.t('delete_account_reason_label'),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _reasonController,
+                enabled: !_busy,
+                maxLines: 3,
+                maxLength: 500,
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: Colors.white,
+                ),
+              ),
+              CheckboxListTile(
+                value: _understood,
+                onChanged: _busy
+                    ? null
+                    : (v) => setState(() => _understood = v ?? false),
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: Text(l10n.t('delete_account_confirm_check')),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                height: 55,
+                child: ElevatedButton(
+                  onPressed: _canSubmit ? _delete : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red[700],
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.red.shade100,
+                    disabledForegroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                  child: _busy
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Text(
+                          l10n.t('delete_account_button'),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

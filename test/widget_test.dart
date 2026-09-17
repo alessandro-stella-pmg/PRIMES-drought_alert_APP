@@ -23,6 +23,10 @@ void main() {
     await tester.pumpWidget(const PrimesApp());
     await tester.pumpAndSettle();
 
+    // L'area si sceglie solo registrandosi.
+    await tester.tap(find.text('REGISTER'));
+    await tester.pumpAndSettle();
+
     Future<void> scegliArea(String nomeArea) async {
       await tester.tap(find.byType(DropdownButtonFormField<PilotArea>));
       await tester.pumpAndSettle();
@@ -30,20 +34,23 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    // Laconia -> greco, subito nella schermata di login.
-    await scegliArea('Ελλάδα - Περιφέρεια Λακωνίας (Σπάρτη)');
-    expect(find.text('Καλώς ήρθατε στο PRIMES'), findsOneWidget);
+    // Paggaio -> greco, subito nella schermata di registrazione.
+    await scegliArea('Ελλάδα - Δήμος Παγγαίου (Καβάλα)');
+    expect(find.text('Δημιουργήστε λογαριασμό'), findsOneWidget);
 
     // Cambiando area cambia di nuovo, senza riavviare.
     await scegliArea('Italia - Regione Marche');
-    expect(find.text('Benvenuto in PRIMES'), findsOneWidget);
+    expect(find.text('Crea il tuo account'), findsOneWidget);
 
     await scegliArea('Hrvatska - Međimurska županija');
-    expect(find.text('Dobrodošli u PRIMES'), findsOneWidget);
+    expect(find.text('Izradite račun'), findsOneWidget);
   });
 
   testWidgets('ogni area espone la sigla della lingua', (tester) async {
     await tester.pumpWidget(const PrimesApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('REGISTER'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byType(DropdownButtonFormField<PilotArea>));

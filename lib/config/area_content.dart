@@ -63,6 +63,15 @@ class AreaDocument {
   String get fileName => asset.split('/').last;
 
   bool get isPdf => asset.toLowerCase().endsWith('.pdf');
+
+  /// Vero per foto e immagini. Il resto — documenti Word, fogli di calcolo —
+  /// non e' ne' l'uno ne' l'altro e prende l'icona generica.
+  bool get isImage {
+    final name = asset.toLowerCase();
+    return name.endsWith('.jpg') ||
+        name.endsWith('.jpeg') ||
+        name.endsWith('.png');
+  }
 }
 
 /// Tutto cio' che il referente ha dichiarato per la sua area.
@@ -106,8 +115,10 @@ const Color _red = Color(0xFFD32F2F);
 const Map<String, AreaContent> areaContents = {
   'hr-medimurje': _medimurje,
   'hr-koprivnica-krizevci': _koprivnicaKrizevci,
+  'ba-gradiska': _gradiska,
   'me-danilovgrad': _danilovgrad,
   'rs-vojvodina': _vojvodina,
+  'gr-paggaio': _paggaio,
 };
 
 AreaContent? areaContentFor(String? areaId) =>
@@ -130,11 +141,23 @@ const Map<String, String> _backendLevelLabels = {
   'Livello 3 - Avviso di carenza': 'level3',
 };
 
+/// La chiave canonica del livello annunciato dal backend, `null` se non si
+/// riconosce.
+///
+/// Serve anche alle aree che non hanno restituito il form: senza `AreaContent`
+/// il nome del livello va preso dalle traduzioni generiche di
+/// `assets/i18n/`, e per pescarlo li' dentro serve comunque la chiave.
+String? backendLevelKeyFor({String? key, String? backendLabel}) {
+  final resolved = (key != null && key.isNotEmpty)
+      ? key
+      : _backendLevelLabels[backendLabel?.trim()];
+  return backendLevelKeys.contains(resolved) ? resolved : null;
+}
+
 /// Il livello dell'area corrispondente a quello annunciato dal backend.
 ///
 /// Restituisce `null` se l'area non e' configurata o se il livello non si
-/// riconosce: in quel caso chi chiama mostra quello che arriva dal backend,
-/// che e' comunque meglio di niente.
+/// riconosce: in quel caso chi chiama ripiega sul nome generico tradotto.
 AlertLevelInfo? areaLevelFor({
   required String? areaId,
   String? key,
@@ -143,9 +166,7 @@ AlertLevelInfo? areaLevelFor({
   final content = areaContentFor(areaId);
   if (content == null) return null;
 
-  final resolved = (key != null && key.isNotEmpty)
-      ? key
-      : _backendLevelLabels[backendLabel?.trim()];
+  final resolved = backendLevelKeyFor(key: key, backendLabel: backendLabel);
   final index = backendLevelKeys.indexOf(resolved ?? '');
   if (index < 0 || index >= content.levels.length) return null;
   return content.levels[index];
@@ -403,6 +424,123 @@ const AreaContent _koprivnicaKrizevci = AreaContent(
 );
 
 // ---------------------------------------------------------------------------
+// Bosna i Hercegovina - Gradiska
+// Form compilato il 14/09/2026 da ivana.mirjanic1@gmail.com.
+// ATTENZIONE: form compilato in inglese con il bosniaco come lingua dell'app.
+// I testi qui sotto sono la traduzione dei suoi contenuti: vanno fatti
+// validare dal partner prima della pubblicazione.
+// Il PDF delle risposte aveva celle troncate: i testi completi sono stati
+// forniti a parte il 14/09/2026. Il nome del livello 4 nel form mancava (il
+// campo conteneva le restrizioni del livello 3): quello qui sotto e' una
+// proposta ricavata dagli altri tre nomi, da far confermare al partner.
+// Nessun documento consegnato: la cartella PRIMES_Aree_Pilota/5_BA_Gradiska
+// e' vuota.
+// ---------------------------------------------------------------------------
+const AreaContent _gradiska = AreaContent(
+  officialName: 'Grad Gradiška',
+  levels: [
+    AlertLevelInfo(
+      name: 'Nema nestašice – redovno stanje',
+      color: _green,
+      rules: [
+        'Voda se može koristiti bez posebnih ograničenja, uz poticanje racionalne potrošnje.',
+        'Zalijevanje bašta, travnjaka i zelenih površina dozvoljeno je bez vremenskih ograničenja.',
+        'Pranje vozila, dvorišta i terasa je dozvoljeno.',
+        'Punjenje privatnih bazena i baštenskih ribnjaka je dozvoljeno.',
+        'Građani se pozivaju da uočene kvarove i curenja na javnoj vodovodnoj mreži prijave nadležnom javnom komunalnom preduzeću.',
+      ],
+    ),
+    AlertLevelInfo(
+      name: 'Nivo pripravnosti (blaga nestašica vode)',
+      color: _yellow,
+      rules: [
+        'Građani se pozivaju da svjesno smanje potrošnju vode na neophodne potrebe.',
+        'Zalijevanje bašta i travnjaka treba izbjegavati između 10:00 i 18:00.',
+        'Preporučuje se zalijevanje kantom umjesto crijevom, najbolje u ranim jutarnjim ili večernjim satima.',
+        'Pranje vozila kod kuće treba svesti na najmanju mjeru; umjesto toga koristite autopraonice sa sistemom recirkulacije vode.',
+        'Punjenje privatnih bazena treba odgoditi.',
+        'Treba provjeriti i popraviti kućne vodovodne instalacije i slavine koje cure.',
+      ],
+    ),
+    AlertLevelInfo(
+      name: 'Nivo ograničenja (umjerena nestašica vode)',
+      color: _orange,
+      rules: [
+        'Zabranjeno je zalijevanje bašta, travnjaka i zelenih površina vodom iz gradske vodovodne mreže.',
+        'Zabranjeno je pranje vozila, dvorišta, terasa i fasada vodom iz javne vodovodne mreže.',
+        'Zabranjeno je punjenje i dopunjavanje bazena i baštenskih ribnjaka.',
+        'Vodu iz javne vodovodne mreže treba prvenstveno koristiti za piće, pripremu hrane i higijenu.',
+        'Pravna lica i ugostiteljski objekti dužni su smanjiti potrošnju vode koja nije neophodna za njihovu osnovnu djelatnost.',
+        'U pojedinim DMA zonama mogu se uvesti noćna smanjenja pritiska ili snabdijevanja vodom, o čemu će građani biti obaviješteni putem aplikacije.',
+      ],
+    ),
+    AlertLevelInfo(
+      // Proposta: nel form il nome mancava. Segue lo schema degli altri tre
+      // ("Preparedness Level", "Restriction Level" -> "Emergency Measures
+      // Level") e il contenuto: uso solo per bere, igiene e cibo, autobotti,
+      // riduzioni programmate. Da far confermare al partner.
+      name: 'Nivo vanrednih mjera (teška nestašica vode)',
+      color: _red,
+      rules: [
+        'Voda iz javne vodovodne mreže smije se koristiti isključivo za piće, osnovnu higijenu i pripremu hrane.',
+        'Zalijevanje, pranje vozila i površina te punjenje bazena potpuno su zabranjeni.',
+        'Planirana smanjenja u snabdijevanju vodom uvodit će se po zonama, prema rasporedu koji objavljuje javno komunalno preduzeće.',
+        'Voda će se dopremati autocisternama na unaprijed određena mjesta distribucije u pogođenim područjima.',
+        'Prednost u snabdijevanju vodom imaju bolnice, domovi zdravlja, škole, vrtići i druge ustanove od javnog značaja.',
+        'Građanima se preporučuje da drže manje kućne zalihe pitke vode i prate službena obavještenja putem aplikacije.',
+      ],
+    ),
+  ],
+  permanentRules: [
+    'Zabranjeni su neovlašteni priključci na javnu vodovodnu mrežu i neovlašteno korištenje hidranata.',
+    'Svako uočeno curenje ili kvar na javnoj vodovodnoj mreži treba prijaviti nadležnom javnom komunalnom preduzeću.',
+    'Zabranjeno je ispuštanje pitke vode iz javne vodovodne mreže u tehničke svrhe kada je dostupan alternativni izvor, poput bunara ili kišnice.',
+    'Tokom cijele godine preporučuje se prikupljanje i korištenje kišnice za zalijevanje i druge namjene za koje nije potrebna pitka voda.',
+  ],
+  // I numeri locali del form (051, 065, 063) sono in formato internazionale,
+  // cosi' la chiamata parte anche da una SIM straniera. Una parte dei telefoni
+  // era nel campo delle email del form: qui stanno tutti tra i numeri.
+  contacts: [
+    AreaContact('Civilna zaštita – dežurni broj', '121'),
+    // Il form da' lo stesso numero a Odjeljenje e al centro operativo.
+    AreaContact(
+      'Odjeljenje civilne zaštite Grada Gradiške / Operativno-komunikacijski centar',
+      '+387 51 814 753',
+    ),
+    AreaContact(
+      'Načelnik Odjeljenja civilne zaštite, Slobodan Knežević',
+      '+387 65 238 905',
+    ),
+    AreaContact('Vatrogasci – hitni broj', '123'),
+    AreaContact(
+      'Profesionalna vatrogasno-spasilačka jedinica Gradiška',
+      '+387 51 814 754',
+    ),
+    AreaContact(
+      'Profesionalna vatrogasno-spasilačka jedinica Gradiška – dežurna služba',
+      '+387 51 814 724',
+    ),
+    AreaContact('Vodovod Gradiška – dežurni telefon', '+387 51 815 199'),
+    AreaContact('Vodovod Gradiška – dežurni telefon', '+387 65 090 909'),
+    AreaContact('Vodovod Gradiška – dežurni telefon', '+387 63 394 815'),
+    AreaContact('Vodovod Gradiška – centrala', '+387 51 813 733'),
+    AreaContact.email(
+      'Odjeljenje civilne zaštite Grada Gradiške',
+      'czgradiska@yahoo.com',
+    ),
+    AreaContact.email(
+      'Profesionalna vatrogasno-spasilačka jedinica Gradiška',
+      'pvjgradiska@gmail.com',
+    ),
+    AreaContact.email('Vodovod Gradiška', 'info@vodovodgradiska.com'),
+  ],
+  contactHours:
+      'Hitni brojevi 121 (civilna zaštita) i 123 (vatrogasci) dostupni su 24/7, svakog dana u sedmici.\n'
+      'Dežurna služba vatrogasno-spasilačke jedinice i dežurni telefoni Vodovoda dostupni su 24/7, uključujući vikende i praznike.\n'
+      'Kancelarija Odjeljenja civilne zaštite i centrala Vodovoda dostupni su radnim danima od 07:00 do 15:00.',
+);
+
+// ---------------------------------------------------------------------------
 // Crna Gora - Danilovgrad
 // Form compilato il 28/07/2026 da glorija.scepanovic@danilovgrad.me.
 // ATTENZIONE: il referente ha compilato il form in inglese, ma ha indicato il
@@ -484,7 +622,9 @@ const AreaContent _danilovgrad = AreaContent(
 // Srbija - Vojvodina (RDA Backa)
 // Form compilato il 01/09/2026 da andrea.stijepic@rda-backa.rs.
 // Anche qui il form e' arrivato in inglese con il serbo come lingua dell'app:
-// traduzione da far validare al partner. Nessun documento fornito.
+// traduzione da far validare al partner. I documenti sono arrivati in .docx
+// (il form lo consente) e sono stati convertiti in PDF: gli originali stanno
+// nel mirror locale PRIMES_Aree_Pilota/8_RS_Vojvodina_Backa.
 // ---------------------------------------------------------------------------
 const AreaContent _vojvodina = AreaContent(
   officialName: 'Vojvodina',
@@ -545,4 +685,111 @@ const AreaContent _vojvodina = AreaContent(
   contactHours:
       'JVP „Vode Vojvodine" – korisnički servis: pon–pet 08:00–14:00\n'
       'Pokrajinski sekretarijat za poljoprivredu, vodoprivredu i šumarstvo: pon–pet 08:00–16:00',
+  documents: [
+    AreaDocument(
+      title: 'Suše u Vojvodini – edukativni vodič kroz osnovne pojmove',
+      asset: 'assets/docs/rs-vojvodina/suse-u-vojvodini-edukativni-vodic.pdf',
+      size: '560 KB',
+    ),
+    AreaDocument(
+      title: 'Uputstvo za štednju vode',
+      asset: 'assets/docs/rs-vojvodina/uputstvo-za-stednju-vode.pdf',
+      size: '147 KB',
+    ),
+    AreaDocument(
+      title:
+          'Edukativni kutak – podkasti i video-sadržaji o suši i klimatskim promenama',
+      asset: 'assets/docs/rs-vojvodina/edukativni-kutak-podkasti-video.pdf',
+      size: '1021 KB',
+    ),
+    AreaDocument(
+      title: 'Preporučeni domaći članci o suši 2011–2026 (srpski i engleski)',
+      asset: 'assets/docs/rs-vojvodina/preporuceni-clanci-o-susi-2011-2026.pdf',
+      size: '421 KB',
+    ),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Ellada - Perifereiaki Enotita Kavalas, Dimos Paggaiou
+// Form compilato il 13/09/2026 da gsylaios@env.duth.gr, in greco.
+// ATTENZIONE: nel form il campo "nome del livello 2" ripete quello del livello
+// 1 ("Level 1 = Kamia Elleipsi Nerou"). E' un errore di chi ha compilato, non
+// nostro: i due livelli qui portano lo stesso nome perche' il form dice cosi'.
+// Non "aggiustarlo" inventando un nome - deve restare visibile finche' il
+// partner greco non manda la correzione. Le restrizioni dei due livelli, quelle
+// sono diverse gia' nel form.
+// ---------------------------------------------------------------------------
+const AreaContent _paggaio = AreaContent(
+  // Il form indica "Paggaio Municipality" (in inglese) con il greco come
+  // lingua dell'app: qui sta il nome greco, da far validare.
+  officialName: 'Δήμος Παγγαίου',
+  levels: [
+    AlertLevelInfo(
+      name: 'Καμία Έλλειψη Νερού',
+      color: _green,
+      rules: [
+        'Μην σπαταλάτε το νερό, ενημερωθείτε για δράσεις εξοικονόμησης νερού.',
+      ],
+    ),
+    AlertLevelInfo(
+      // Si', uguale al livello 1: e' quello che ha scritto il referente.
+      name: 'Καμία Έλλειψη Νερού',
+      color: _yellow,
+      rules: ['Μην ποτίζετε τους κήπους σας μεταξύ 8:00 και 20:00.'],
+    ),
+    AlertLevelInfo(
+      name: 'Σημαντική Έλλειψη Νερού',
+      color: _orange,
+      rules: [
+        'Αποφυγή πλυσίματος πεζοδρομίων, αυλών και αυτοκινήτων με λάστιχο.',
+      ],
+    ),
+    AlertLevelInfo(
+      name: 'Έντονη Έλλειψη Νερού',
+      color: _red,
+      rules: ['Περιορίστε τη χρήση νερού στις απολύτως απαραίτητες.'],
+    ),
+  ],
+  permanentRules: ['Συλλογή, εξοικονόμηση και επαναχρησιμοποίηση νερού.'],
+  contacts: [
+    // Il form riporta il numero in formato internazionale "0030 25920 41000".
+    AreaContact('ΔΕΥΑ Παγγαίου', '+30 25920 41000'),
+    AreaContact.email('ΔΕΥΑ Παγγαίου', 'grammateia@deyapaggaiou.gr'),
+  ],
+  contactHours: 'Δευ–Παρ 8:00–20:00, Σαβ 8:00–13:00',
+  documents: [
+    AreaDocument(
+      title: 'Ξηρασία',
+      asset: 'assets/docs/gr-paggaio/drought.pdf',
+      size: '207 KB',
+    ),
+    AreaDocument(
+      title: 'Κλιματική Αλλαγή',
+      asset: 'assets/docs/gr-paggaio/climate-change.pdf',
+      size: '99 KB',
+    ),
+    AreaDocument(
+      title:
+          'Πώς η σταδιακή αλλαγή του κλίματος επηρεάζει τα μοτίβα βροχόπτωσης στην Καβάλα',
+      asset: 'assets/docs/gr-paggaio/rainfall-patterns-kavala.pdf',
+      size: '127 KB',
+    ),
+    AreaDocument(
+      title: 'Η συστηματική παρακολούθηση παράκτιας ζώνης του Δήμου Παγγαίου',
+      asset: 'assets/docs/gr-paggaio/coastal-zone-monitoring.pdf',
+      size: '162 KB',
+    ),
+    AreaDocument(
+      title:
+          'Τεχνολογίες βασισμένες στη Φύση για την επεξεργασία λυμάτων στη Μουσθένη και Μεσορρόπη',
+      asset: 'assets/docs/gr-paggaio/nature-based-wastewater-treatment.pdf',
+      size: '125 KB',
+    ),
+    AreaDocument(
+      title: 'Χρονοσειρά του δείκτη ξηρασίας SPEI',
+      asset: 'assets/docs/gr-paggaio/spei-timeseries.png',
+      size: '43 KB',
+    ),
+  ],
 );

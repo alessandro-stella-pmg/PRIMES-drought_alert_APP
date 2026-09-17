@@ -104,10 +104,21 @@ void main() {
 
     test('una chiave sconosciuta non risolve nulla', () {
       expect(areaLevelFor(areaId: 'hr-medimurje', key: 'level9'), isNull);
-      expect(
-        areaLevelFor(areaId: 'hr-medimurje', backendLabel: 'Boh'),
-        isNull,
-      );
+      expect(areaLevelFor(areaId: 'hr-medimurje', backendLabel: 'Boh'), isNull);
+    });
+
+    // Senza questa chiave un'area senza form mostrerebbe in card l'etichetta
+    // italiana di servizio del backend, come e' successo a Gradiska.
+    test("la chiave si riconosce anche senza area configurata", () {
+      expect(backendLevelKeyFor(key: 'level2'), 'level2');
+      expect(backendLevelKeyFor(backendLabel: 'Livello 2 - Allarme'), 'level2');
+      expect(backendLevelKeyFor(backendLabel: 'Nessuna carenza'), 'none');
+    });
+
+    test('una chiave che il backend non usa non passa', () {
+      expect(backendLevelKeyFor(key: 'level9'), isNull);
+      expect(backendLevelKeyFor(backendLabel: 'Boh'), isNull);
+      expect(backendLevelKeyFor(), isNull);
     });
   });
 

@@ -73,8 +73,8 @@ const List<PilotArea> pilotAreas = [
     locale: Locale.fromSubtags(languageCode: 'sr', scriptCode: 'Latn'),
   ),
   PilotArea(
-    id: 'gr-laconia',
-    label: 'Περιφέρεια Λακωνίας (Σπάρτη)',
+    id: 'gr-paggaio',
+    label: 'Δήμος Παγγαίου (Καβάλα)',
     country: 'Ελλάδα',
     locale: Locale('el'),
   ),
