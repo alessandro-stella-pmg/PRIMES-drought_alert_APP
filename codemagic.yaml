@@ -69,7 +69,14 @@ workflows:
           # REVERSED_CLIENT_ID del progetto Firebase. Non lo scriviamo nel
           # repository: lo leggiamo dal plist appena generato, cosi' resta uno
           # solo il posto da aggiornare se il progetto Firebase cambia.
-          REVERSED=$(/usr/libexec/PlistBuddy -c "Print :REVERSED_CLIENT_ID" ios/Runner/GoogleService-Info.plist)
+          REVERSED=$(/usr/libexec/PlistBuddy -c "Print :REVERSED_CLIENT_ID" ios/Runner/GoogleService-Info.plist 2>/dev/null || true)
+          if [ -z "$REVERSED" ]; then
+            echo "REVERSED_CLIENT_ID assente dal GoogleService-Info.plist."
+            echo "Vuol dire che Google non e' attivo come provider in Firebase Authentication,"
+            echo "oppure che il plist scaricato e' anteriore all'attivazione: riattivalo e"
+            echo "riscarica il file, altrimenti il login con Google su iOS non torna nell'app."
+            exit 1
+          fi
           PLIST=ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST"
