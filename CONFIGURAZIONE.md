@@ -1,4 +1,4 @@
-# PRIMES Drought-Alert — configurazione
+# PRIMES Informs — configurazione
 
 ## 1. Lingua per area pilota
 

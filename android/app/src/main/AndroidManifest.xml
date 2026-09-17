@@ -2,7 +2,7 @@
     <!-- Necessario per il WebSocket del backend -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="PRIMES"
+        android:label="PRIMES Informs"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

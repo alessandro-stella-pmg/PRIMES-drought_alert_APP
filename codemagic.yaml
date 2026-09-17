@@ -1,4 +1,4 @@
-# Build iOS di PRIMES Drought-Alert su Codemagic.
+# Build iOS di PRIMES Informs su Codemagic.
 #
 # Il progetto si sviluppa su Windows: questo file e' l'unico modo di produrre
 # un .ipa firmato e mandarlo su TestFlight senza un Mac.
