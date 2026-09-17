@@ -1,0 +1,150 @@
+# Build iOS di PRIMES Drought-Alert su Codemagic.
+#
+# Il progetto si sviluppa su Windows: questo file e' l'unico modo di produrre
+# un .ipa firmato e mandarlo su TestFlight senza un Mac.
+#
+# Prima di lanciare la prima build vanno creati su Codemagic due gruppi di
+# variabili (Settings -> Environment variables):
+#
+#   firebase
+#     GOOGLE_SERVICE_PLIST_PRIMES   contenuto integrale di GoogleService-Info.plist
+#                                   (l'iOS app di Firebase per com.primes.droughtalert).
+#                                   Non sta nel repository: vedi .gitignore.
+#
+#   app_store_credentials
+#     APP_STORE_CONNECT_PRIVATE_KEY      chiave .p8 di App Store Connect
+#     APP_STORE_CONNECT_KEY_IDENTIFIER   Key ID della stessa chiave
+#     APP_STORE_CONNECT_ISSUER_ID        Issuer ID del team
+#     CERTIFICATE_PRIVATE_KEY            chiave privata per i certificati di firma
+#
+workflows:
+  ios-release:
+    name: PRIMES iOS - TestFlight
+    instance_type: mac_mini_m1
+    max_build_duration: 60
+
+    environment:
+      groups:
+        - firebase
+        - app_store_credentials
+      vars:
+        BUNDLE_ID: "com.primes.droughtalert"
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: GoogleService-Info.plist da variabile d'ambiente
+        script: |
+          set -e
+          if [ -z "$GOOGLE_SERVICE_PLIST_PRIMES" ]; then
+            echo "GOOGLE_SERVICE_PLIST_PRIMES mancante: senza Firebase non ci sono ne' login ne' notifiche."
+            echo "Codemagic -> Settings -> Environment variables -> gruppo 'firebase'."
+            exit 1
+          fi
+          echo "$GOOGLE_SERVICE_PLIST_PRIMES" > ios/Runner/GoogleService-Info.plist
+          echo "GoogleService-Info.plist scritto."
+
+          # Il file va referenziato nel progetto Xcode, altrimenti non finisce
+          # nel bundle e Firebase parte "non configurato".
+          ruby <<'RUBY'
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open('ios/Runner.xcodeproj')
+          target = project.targets.find { |t| t.name == 'Runner' }
+          group = project.main_group.find_subpath('Runner', false)
+          if group.files.find { |f| f.path == 'GoogleService-Info.plist' }
+            puts 'GoogleService-Info.plist era gia nel progetto Xcode'
+          else
+            ref = group.new_reference('GoogleService-Info.plist')
+            target.resources_build_phase.add_file_reference(ref)
+            project.save
+            puts 'GoogleService-Info.plist aggiunto al progetto Xcode'
+          end
+          RUBY
+
+      - name: Schema URL per il login con Google
+        script: |
+          set -e
+          # Google Sign-In torna nell'app attraverso uno schema URL che e' il
+          # REVERSED_CLIENT_ID del progetto Firebase. Non lo scriviamo nel
+          # repository: lo leggiamo dal plist appena generato, cosi' resta uno
+          # solo il posto da aggiornare se il progetto Firebase cambia.
+          REVERSED=$(/usr/libexec/PlistBuddy -c "Print :REVERSED_CLIENT_ID" ios/Runner/GoogleService-Info.plist)
+          PLIST=ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleTypeRole string Editor" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string $REVERSED" "$PLIST"
+          echo "Schema URL Google configurato."
+
+      - name: Certificati e provisioning profile
+        script: |
+          set -e
+          if [ -z "$APP_STORE_CONNECT_PRIVATE_KEY" ]; then
+            echo "APP_STORE_CONNECT_PRIVATE_KEY mancante."
+            echo "Codemagic -> Settings -> Environment variables -> gruppo 'app_store_credentials'."
+            exit 1
+          fi
+
+          keychain initialize
+          # --create genera identificativo app e profilo se non esistono ancora:
+          # serve alla prima build, poi e' innocuo.
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles
+          xcode-project use-profiles --export-options-plist=ios/ExportOptions.plist
+          echo "Firma configurata."
+
+      - name: CocoaPods
+        script: |
+          set -e
+          flutter pub get
+          # Genera ios/Podfile e Generated.xcconfig senza compilare.
+          flutter build ios --config-only
+
+          # La piattaforma minima deve corrispondere a IPHONEOS_DEPLOYMENT_TARGET
+          # del progetto Xcode (13.0): se restano disallineate, pod install passa
+          # ma il link fallisce.
+          sed -i '' "s/^# platform :ios.*/platform :ios, '13.0'/" ios/Podfile
+
+          cd ios
+          # Il CDN di CocoaPods risponde 429 quando e' sotto carico: qualche
+          # tentativo evita di rifare tutta la build per un errore di rete.
+          for i in 1 2 3 4; do
+            pod install && break
+            echo "pod install fallito, riprovo fra 10s (tentativo $i)"
+            sleep 10
+          done
+          cd ..
+
+      - name: Build IPA
+        script: |
+          set -e
+          # La versione visibile agli utenti (la parte prima del +) si decide in
+          # pubspec.yaml e va alzata a mano a ogni rilascio. Il numero di build
+          # lo mette Codemagic: App Store Connect rifiuta un numero gia' usato,
+          # e un contatore automatico e' l'unico modo di non scontrarcisi mai.
+          echo "Versione: $(grep '^version:' pubspec.yaml) - build $BUILD_NUMBER"
+          flutter build ipa --release \
+            --build-number=$BUILD_NUMBER \
+            --export-options-plist=ios/ExportOptions.plist
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcode_build_logs/*.log
+      - "*.dSYM.zip"
+
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true
+      email:
+        recipients:
+          - stellaalessandro13@gmail.com
+        notify:
+          success: true
+          failure: true

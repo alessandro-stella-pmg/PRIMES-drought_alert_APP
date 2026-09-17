@@ -53,6 +53,13 @@
 		<string>tel</string>
 		<string>mailto</string>
 	</array>
+	<!-- Le notifiche PRIMES devono arrivare anche ad app chiusa: senza
+	     questo background mode iOS non risveglia l'app per i messaggi
+	     FCM con payload dati. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 		<true/>
 		<key>UIStatusBarHidden</key>
