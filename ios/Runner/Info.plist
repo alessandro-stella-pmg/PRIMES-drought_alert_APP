@@ -56,6 +56,11 @@
 	<!-- Le notifiche PRIMES devono arrivare anche ad app chiusa: senza
 	     questo background mode iOS non risveglia l'app per i messaggi
 	     FCM con payload dati. -->
+	<!-- L'app usa solo HTTPS, cioe' crittografia esente: dichiararlo qui
+	     evita che ogni build resti bloccata su TestFlight in attesa che
+	     qualcuno risponda a mano alla domanda sulla conformita' export. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
