@@ -105,29 +105,43 @@ workflows:
           cat > /tmp/ripara_pem.py <<'PY'
           import base64, os, re, sys, textwrap
 
-          nome = sys.argv[1]
+          nome, dest, attesa = sys.argv[1], sys.argv[2], sys.argv[3]
           raw = os.environ.get(nome, '').strip()
-          dest = sys.argv[2]
           pem = re.compile(r'-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----', re.S)
 
           # Alcuni pannelli salvano gli a capo come sequenze letterali.
           testo = raw.replace(chr(92) + 'n', chr(10)).replace(chr(92) + 'r', '')
+          compatto = re.sub(r'\s+', '', testo)
+
+          def riempi(b64):
+              return b64 + '=' * (-len(b64) % 4)
+
+          etichetta = corpo = None
 
           m = pem.search(testo)
-          if not m:
-              # Base64: si tolgono tutti gli spazi prima di decodificare, e si
-              # prova anche a rimettere il riempimento finale se e' stato perso.
-              compatto = re.sub(r'\s+', '', testo)
-              for tentativo in (compatto, compatto + '=' * (-len(compatto) % 4)):
+          if m:
+              etichetta, corpo = m.group(1), re.sub(r'\s+', '', m.group(2))
+          else:
+              # Il valore potrebbe essere l'intero file codificato in base64.
+              try:
+                  dentro = base64.b64decode(riempi(compatto)).decode('utf-8', 'ignore')
+              except Exception:
+                  dentro = ''
+              m = pem.search(dentro)
+              if m:
+                  etichetta, corpo = m.group(1), re.sub(r'\s+', '', m.group(2))
+              elif re.fullmatch(r'[A-Za-z0-9+/]+={0,2}', compatto or '-'):
+                  # Solo il corpo, senza le righe coi trattini: capita quando si
+                  # seleziona il contenuto del file saltando prima e ultima riga.
+                  # L'etichetta non e' ricavabile dal testo, la passa chi chiama.
                   try:
-                      decodificato = base64.b64decode(tentativo).decode('utf-8', 'ignore')
+                      der = base64.b64decode(riempi(compatto))
                   except Exception:
-                      continue
-                  m = pem.search(decodificato)
-                  if m:
-                      break
+                      der = b''
+                  if len(der) > 50:
+                      etichetta, corpo = attesa, compatto
 
-          if not m:
+          if not corpo:
               # Non tiriamo a indovinare: si descrive cosa e' arrivato davvero,
               # senza stampare la chiave.
               estranei = sorted(set(re.sub(r'[A-Za-z0-9+/=\s-]', '', testo)))
@@ -141,17 +155,18 @@ workflows:
                   print('  prima riga           : %s' % testo.splitlines()[0][:40])
               sys.exit('%s non e\' ne\' PEM ne\' base64 di un PEM' % nome)
 
-          etichetta = m.group(1)
-          corpo = re.sub(r'\s+', '', m.group(2))
           with open(dest, 'w') as f:
               f.write('-----BEGIN %s-----\n' % etichetta)
               f.write('\n'.join(textwrap.wrap(corpo, 64)))
               f.write('\n-----END %s-----\n' % etichetta)
-          print('%s: chiave "%s" ricostruita' % (sys.argv[1], etichetta))
+          print('%s: chiave "%s" ricostruita' % (nome, etichetta))
           PY
 
-          python3 /tmp/ripara_pem.py APP_STORE_CONNECT_PRIVATE_KEY /tmp/asc_api_key.p8
-          python3 /tmp/ripara_pem.py CERTIFICATE_PRIVATE_KEY /tmp/certificate_key.pem
+          # L'ultimo argomento e' l'etichetta da rimettere se nel valore sono
+          # rimaste fuori le righe coi trattini: la chiave di App Store Connect
+          # e' una PKCS#8, quella per i certificati una RSA generata da ssh-keygen.
+          python3 /tmp/ripara_pem.py APP_STORE_CONNECT_PRIVATE_KEY /tmp/asc_api_key.p8 "PRIVATE KEY"
+          python3 /tmp/ripara_pem.py CERTIFICATE_PRIVATE_KEY /tmp/certificate_key.pem "RSA PRIVATE KEY"
           chmod 600 /tmp/asc_api_key.p8 /tmp/certificate_key.pem
 
           keychain initialize
