@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'config/api_config.dart';
@@ -518,9 +519,22 @@ void _handlePushOpened(PushMessage push) {
   notificaDaAprire.value = notif;
 }
 
+/// Versione e numero di build, letti dal pacchetto installato e mostrati in
+/// fondo alla schermata di accesso. Non si scrive a mano: cosi' il numero a
+/// schermo e' per forza quello della build che si sta guardando, ed e' l'unico
+/// modo di sapere al volo se il telefono ha davvero l'ultima.
+String appVersionLabel = '';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppPrefs.load();
+
+  try {
+    final info = await PackageInfo.fromPlatform();
+    appVersionLabel = 'v${info.version} (${info.buildNumber})';
+  } catch (e) {
+    debugPrint('[versione] non letta: $e');
+  }
 
   // FCM: canale affidabile, funziona anche ad app chiusa. Se Firebase non e'
   // configurato l'init non solleva e l'app resta usabile senza push.
@@ -976,6 +990,15 @@ class _LoginScreenState extends State<LoginScreen> {
                         fit: BoxFit.contain,
                       ),
                     ),
+                    if (appVersionLabel.isNotEmpty)
+                      Text(
+                        appVersionLabel,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF5A7BA6),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                   ],
                 ),
               ),

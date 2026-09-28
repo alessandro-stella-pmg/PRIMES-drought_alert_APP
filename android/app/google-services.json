@@ -22,6 +22,22 @@
           }
         },
         {
+          "client_id": "225520625301-f680hgcrem9lc5iml4120et9r4kv9417.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.primes.droughtalert",
+            "certificate_hash": "b6e6eb69c18abaadff1446e9d1ab663b89e8d52f"
+          }
+        },
+        {
+          "client_id": "225520625301-glg57cla76cks31si882qmbuo5gg5es1.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.primes.droughtalert",
+            "certificate_hash": "01d014164d46d2bd74bc64efea319a5522d77eb6"
+          }
+        },
+        {
           "client_id": "225520625301-uglhe1e385u37f1gkciv3sld0o8l6avm.apps.googleusercontent.com",
           "client_type": 3
         }
@@ -37,6 +53,13 @@
             {
               "client_id": "225520625301-uglhe1e385u37f1gkciv3sld0o8l6avm.apps.googleusercontent.com",
               "client_type": 3
+            },
+            {
+              "client_id": "225520625301-bd41p16rdfnfvs0eg03aqnf8fs7b8iio.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.primes.droughtalert"
+              }
             }
           ]
         }

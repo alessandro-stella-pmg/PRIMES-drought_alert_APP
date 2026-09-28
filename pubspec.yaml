@@ -1,7 +1,7 @@
 name: app_primes
 description: "PRIMES Inform - Interreg IPA ADRION"
 publish_to: 'none'
-version: 1.0.0+2
+version: 1.0.0+3
 
 environment:
   sdk: ^3.9.0
@@ -29,6 +29,9 @@ dependencies:
   # Apertura dei documenti ufficiali dell'area con il visualizzatore di sistema
   open_filex: ^4.7.0
   path_provider: ^2.1.5
+  # Legge versione e numero di build dal pacchetto installato: il numero
+  # mostrato nell'app non puo' divergere da quello di pubspec.yaml.
+  package_info_plus: ^8.0.0
   google_sign_in: ^7.2.0
 
 dev_dependencies:
