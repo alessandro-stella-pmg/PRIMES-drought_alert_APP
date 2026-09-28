@@ -561,7 +561,7 @@ class PrimesApp extends StatelessWidget {
     return ValueListenableBuilder<PilotArea?>(
       valueListenable: selectedPilotArea,
       builder: (context, area, _) => MaterialApp(
-        title: 'PRIMES Informs',
+        title: 'PRIMES Inform',
         locale: area?.locale,
         localizationsDelegates: const [
           AppLocalizations.delegate,

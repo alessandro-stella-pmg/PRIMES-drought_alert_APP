@@ -1,4 +1,4 @@
-# PRIMES Informs — configurazione
+# PRIMES Inform — configurazione
 
 ## 1. Lingua per area pilota
 
