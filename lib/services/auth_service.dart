@@ -109,8 +109,12 @@ class AuthService {
       );
       return cred.user;
     } on GoogleSignInException catch (e) {
-      if (e.code == GoogleSignInExceptionCode.canceled) return null;
+      // Si stampa prima di distinguere i casi: Credential Manager riporta come
+      // "annullato" anche il rifiuto del server, per esempio quando l'impronta
+      // di firma dell'app non e' fra quelle registrate. Senza questa riga
+      // l'unico sintomo e' un pulsante che non fa niente.
       debugPrint('[auth] google ${e.code}: ${e.description}');
+      if (e.code == GoogleSignInExceptionCode.canceled) return null;
       final misconfigured =
           e.code == GoogleSignInExceptionCode.clientConfigurationError ||
           e.code == GoogleSignInExceptionCode.providerConfigurationError;
