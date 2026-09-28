@@ -105,19 +105,41 @@ workflows:
           cat > /tmp/ripara_pem.py <<'PY'
           import base64, os, re, sys, textwrap
 
-          raw = os.environ.get(sys.argv[1], '').strip()
+          nome = sys.argv[1]
+          raw = os.environ.get(nome, '').strip()
           dest = sys.argv[2]
           pem = re.compile(r'-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----', re.S)
 
-          m = pem.search(raw)
+          # Alcuni pannelli salvano gli a capo come sequenze letterali.
+          testo = raw.replace(chr(92) + 'n', chr(10)).replace(chr(92) + 'r', '')
+
+          m = pem.search(testo)
           if not m:
-              try:
-                  raw = base64.b64decode(raw, validate=True).decode()
-              except Exception:
-                  sys.exit('%s non e\' ne\' PEM ne\' base64 di un PEM' % sys.argv[1])
-              m = pem.search(raw)
-              if not m:
-                  sys.exit('%s: il base64 non contiene una chiave PEM' % sys.argv[1])
+              # Base64: si tolgono tutti gli spazi prima di decodificare, e si
+              # prova anche a rimettere il riempimento finale se e' stato perso.
+              compatto = re.sub(r'\s+', '', testo)
+              for tentativo in (compatto, compatto + '=' * (-len(compatto) % 4)):
+                  try:
+                      decodificato = base64.b64decode(tentativo).decode('utf-8', 'ignore')
+                  except Exception:
+                      continue
+                  m = pem.search(decodificato)
+                  if m:
+                      break
+
+          if not m:
+              # Non tiriamo a indovinare: si descrive cosa e' arrivato davvero,
+              # senza stampare la chiave.
+              estranei = sorted(set(re.sub(r'[A-Za-z0-9+/=\s-]', '', testo)))
+              print('--- cosa contiene %s ---' % nome)
+              print('  lunghezza            : %d caratteri' % len(raw))
+              print('  contiene "BEGIN"     : %s' % ('si' if 'BEGIN' in testo else 'no'))
+              print('  contiene "-----"     : %s' % ('si' if '-----' in testo else 'no'))
+              print('  a capo               : %d' % testo.count(chr(10)))
+              print('  caratteri inattesi   : %s' % (''.join(estranei[:12]) or 'nessuno'))
+              if 'BEGIN' in testo:
+                  print('  prima riga           : %s' % testo.splitlines()[0][:40])
+              sys.exit('%s non e\' ne\' PEM ne\' base64 di un PEM' % nome)
 
           etichetta = m.group(1)
           corpo = re.sub(r'\s+', '', m.group(2))
