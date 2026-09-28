@@ -95,10 +95,55 @@ workflows:
             exit 1
           fi
 
+          # I campi delle variabili su Codemagic sono a riga singola: una chiave
+          # PEM incollata li' dentro perde gli a capo e arriva come un blocco
+          # unico, che la CLI rifiuta con "not a valid PEM encoded private key".
+          # Qui la rimettiamo in forma. Accetta indifferentemente il PEM
+          # originale, lo stesso PEM appiattito su una riga, o la chiave
+          # codificata in base64 - che e' il modo piu' sicuro di incollarla,
+          # perche' non contiene a capo da perdere.
+          cat > /tmp/ripara_pem.py <<'PY'
+          import base64, os, re, sys, textwrap
+
+          raw = os.environ.get(sys.argv[1], '').strip()
+          dest = sys.argv[2]
+          pem = re.compile(r'-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----', re.S)
+
+          m = pem.search(raw)
+          if not m:
+              try:
+                  raw = base64.b64decode(raw, validate=True).decode()
+              except Exception:
+                  sys.exit('%s non e\' ne\' PEM ne\' base64 di un PEM' % sys.argv[1])
+              m = pem.search(raw)
+              if not m:
+                  sys.exit('%s: il base64 non contiene una chiave PEM' % sys.argv[1])
+
+          etichetta = m.group(1)
+          corpo = re.sub(r'\s+', '', m.group(2))
+          with open(dest, 'w') as f:
+              f.write('-----BEGIN %s-----\n' % etichetta)
+              f.write('\n'.join(textwrap.wrap(corpo, 64)))
+              f.write('\n-----END %s-----\n' % etichetta)
+          print('%s: chiave "%s" ricostruita' % (sys.argv[1], etichetta))
+          PY
+
+          python3 /tmp/ripara_pem.py APP_STORE_CONNECT_PRIVATE_KEY /tmp/asc_api_key.p8
+          python3 /tmp/ripara_pem.py CERTIFICATE_PRIVATE_KEY /tmp/certificate_key.pem
+          chmod 600 /tmp/asc_api_key.p8 /tmp/certificate_key.pem
+
           keychain initialize
           # --create genera identificativo app e profilo se non esistono ancora:
-          # serve alla prima build, poi e' innocuo.
-          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          # serve alla prima build, poi e' innocuo. Le chiavi si passano dai
+          # file appena ricostruiti, non dalle variabili d'ambiente.
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE --create \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --private-key @file:/tmp/asc_api_key.p8 \
+            --certificate-key @file:/tmp/certificate_key.pem
+          # Senza argomenti: prende i certificati che fetch-signing-files ha
+          # appena salvato nella cartella di sistema.
           keychain add-certificates
           xcode-project use-profiles
           xcode-project use-profiles --export-options-plist=ios/ExportOptions.plist
