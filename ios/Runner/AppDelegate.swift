@@ -19,4 +19,16 @@ import UIKit
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
+
+  // Ogni push porta con se' badge: 1, che accende il pallino rosso sull'icona.
+  // Nessuno lo spegneva, quindi restava anche dopo aver letto tutto. Si azzera
+  // quando l'utente apre l'app: e' il momento in cui ha visto gli avvisi.
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    if #available(iOS 16.0, *) {
+      UNUserNotificationCenter.current().setBadgeCount(0)
+    } else {
+      application.applicationIconBadgeNumber = 0
+    }
+    super.applicationDidBecomeActive(application)
+  }
 }
