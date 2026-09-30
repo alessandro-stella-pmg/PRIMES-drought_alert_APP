@@ -86,6 +86,14 @@ Future<void> firebaseBackgroundHandler(RemoteMessage message) async {
 /// FCM e' l'unico canale delle notifiche: consegna anche ad app chiusa e
 /// raggiunge solo i dispositivi su cui un utente ha fatto login.
 class PushService {
+  /// Perche' le notifiche non funzionano, in forma leggibile.
+  ///
+  /// Su iOS non abbiamo modo di leggere i log del dispositivo, e un token che
+  /// non arriva e' indistinguibile da un backend che non invia. Questa riga
+  /// compare in Home solo quando c'e' un problema, e dice a che punto della
+  /// catena si e' interrotta.
+  static String? diagnosi;
+
   static bool _initialised = false;
   static String? _token;
 
@@ -117,7 +125,11 @@ class PushService {
 
       // iOS e Android 13+ richiedono il permesso esplicito. Su Android <13
       // la chiamata e' innocua e restituisce sempre "authorized".
-      await messaging.requestPermission(alert: true, badge: true, sound: true);
+      final permesso = await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
 
       // Con l'app in primo piano iOS non mostra nulla di default: senza questa
       // riga una notifica che arriva mentre l'utente guarda l'app sparirebbe.
@@ -141,13 +153,37 @@ class PushService {
       // configurata su Firebase, non torna mai. Senza questo limite l'app
       // restava ferma sulla schermata iniziale: si rinuncia alle push, non
       // all'avvio.
+      // Su iOS il token APNs viene prima di quello FCM: se manca il primo il
+      // problema e' di Apple - permesso negato, entitlement o profilo - se
+      // manca solo il secondo e' di Firebase, tipicamente la chiave APNs.
+      String? apns;
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        apns = await messaging.getAPNSToken().timeout(
+          const Duration(seconds: 8),
+          onTimeout: () => null,
+        );
+      }
+
       _token = await messaging.getToken().timeout(
         const Duration(seconds: 8),
         onTimeout: () => null,
       );
-      if (_token == null) {
-        debugPrint('[push] nessun token: notifiche non disponibili');
+
+      final stato = permesso.authorizationStatus.name;
+      if (_token != null) {
+        diagnosi = null;
+      } else if (stato != 'authorized' && stato != 'provisional') {
+        diagnosi = 'Notifiche non attive: permesso $stato.';
+      } else if (defaultTargetPlatform == TargetPlatform.iOS && apns == null) {
+        diagnosi =
+            'Notifiche non attive: nessun token APNs (permesso $stato). '
+            'Il dispositivo non si registra presso Apple.';
+      } else {
+        diagnosi =
+            'Notifiche non attive: nessun token FCM (permesso $stato, '
+            'APNs ${apns == null ? "assente" : "presente"}).';
       }
+      if (diagnosi != null) debugPrint('[push] $diagnosi');
 
       // Il token puo' cambiare (reinstallazione, ripristino, pulizia dati):
       // senza questo listener il dispositivo smetterebbe di ricevere avvisi
@@ -164,6 +200,7 @@ class PushService {
       _initialised = true;
       debugPrint('[push] FCM pronto, token ${_token?.substring(0, 12)}...');
     } catch (e) {
+      diagnosi = 'Notifiche non attive: $e';
       debugPrint('[push] FCM non disponibile: $e');
     }
   }
