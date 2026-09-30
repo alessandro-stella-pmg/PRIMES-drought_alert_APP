@@ -586,6 +586,14 @@ Future<void> main() async {
   // La sessione decide quale schermata si apre per prima, quindi si aspetta:
   // e' lettura locale e ha gia' un limite di cinque secondi al suo interno.
   await _passoDiAvvio('sessione', AuthService.ready);
+  // Si scrive sempre, anche quando va bene: una sessione che non viene
+  // ripristinata non produce nessun errore, quindi senza questa riga
+  // l'assenza di log e' indistinguibile dal successo.
+  debugPrint(
+    '[avvio] firebase ${AuthService.isAvailable ? "pronto" : "NON disponibile"}, '
+    'sessione ${AuthService.isSignedIn ? "ripristinata" : "ASSENTE"}, '
+    'area ${selectedPilotArea.value?.id ?? "nessuna"}',
+  );
 
   await _passoDiAvvio('notifiche', initializeNotificationService);
   // Il selettore dell'area e' raggiungibile dalla Home: quando l'utente la
