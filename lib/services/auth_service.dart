@@ -31,6 +31,16 @@ class AuthService {
 
   static bool get isSignedIn => currentUser != null;
 
+  /// Cambi di stato dell'accesso: `true` quando c'e' una sessione.
+  ///
+  /// Firebase rilegge la sessione salvata in modo asincrono, quindi al primo
+  /// disegno l'utente puo' risultare assente e comparire un istante dopo. Chi
+  /// decide quale schermata mostrare deve ascoltare questo flusso: leggendo
+  /// una volta sola si rischia di mostrare l'accesso a chi e' gia' dentro.
+  static Stream<bool> get accessoCambiato => isAvailable
+      ? FirebaseAuth.instance.authStateChanges().map((u) => u != null)
+      : const Stream<bool>.empty();
+
   /// Quando e' stato creato l'account.
   ///
   /// Serve a non mostrare all'utente le comunicazioni mandate alla sua area

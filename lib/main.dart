@@ -683,10 +683,21 @@ class AuthGate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!AuthService.isSignedIn) return const LoginScreen();
-    if (selectedPilotArea.value == null) return const ProfileGate();
-    if (!AuthService.isEmailVerified) return const VerifyEmailScreen();
-    return const HomePage();
+    // Si ascolta lo stato invece di leggerlo una volta sola. Firebase
+    // ripristina la sessione salvata in modo asincrono: leggendola al primo
+    // disegno poteva risultare assente, e l'app restava sulla schermata di
+    // accesso anche a sessione valida, senza alcun errore. Capitava soprattutto
+    // aprendo dalla notifica, che e' sempre un avvio a freddo.
+    return StreamBuilder<bool>(
+      stream: AuthService.accessoCambiato,
+      initialData: AuthService.isSignedIn,
+      builder: (context, stato) {
+        if (!(stato.data ?? false)) return const LoginScreen();
+        if (selectedPilotArea.value == null) return const ProfileGate();
+        if (!AuthService.isEmailVerified) return const VerifyEmailScreen();
+        return const HomePage();
+      },
+    );
   }
 }
 
