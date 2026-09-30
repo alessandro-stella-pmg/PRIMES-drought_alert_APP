@@ -1776,7 +1776,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         onDone: _scheduleReconnect,
         cancelOnError: true,
       );
-      _reconnectAttempt = 0;
+      // connect() e' pigro: torna subito e l'esito arriva dopo. Azzerare qui
+      // il contatore dei tentativi lo rimetteva a zero prima di sapere se la
+      // connessione fosse riuscita, cosi' il ritardo restava fisso a due
+      // secondi e un backend irraggiungibile veniva interrogato all'infinito.
+      // Si azzera solo a connessione stabilita.
+      unawaited(
+        _channel!.ready
+            .then((_) {
+              if (_disposed) return;
+              _reconnectAttempt = 0;
+              // Mentre eravamo scollegati lo stato puo' essere cambiato.
+              _loadFromBackend();
+            })
+            .catchError((_) {}),
+      );
     } catch (_) {
       _scheduleReconnect();
     }
@@ -1805,11 +1819,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _reconnectAttempt = (_reconnectAttempt + 1).clamp(1, 5);
     final delay = Duration(seconds: (1 << _reconnectAttempt).clamp(2, 60));
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(delay, () {
-      _connectWebSocket();
-      // Al rientro lo stato puo' essere cambiato mentre eravamo scollegati.
-      _loadFromBackend();
-    });
+    // Il ricaricamento avviene a connessione riuscita, non a ogni tentativo:
+    // altrimenti un backend irraggiungibile veniva interrogato a ogni giro.
+    _reconnectTimer = Timer(delay, _connectWebSocket);
   }
 
   /// Il WebSocket porta solo il livello di allerta, che e' pubblico. Le
