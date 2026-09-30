@@ -594,6 +594,13 @@ Future<void> main() async {
     'sessione ${AuthService.isSignedIn ? "ripristinata" : "ASSENTE"}, '
     'area ${selectedPilotArea.value?.id ?? "nessuna"}',
   );
+  // La sequenza dei cambi di stato, non solo la fotografia iniziale: una
+  // sessione che compare un istante dopo e' una corsa persa, una che non
+  // compare mai e' persistenza rotta. Senza questo le due cause si
+  // presentano identiche.
+  AuthService.accessoCambiato.listen(
+    (dentro) => debugPrint('[avvio] accesso -> ${dentro ? "dentro" : "fuori"}'),
+  );
 
   await _passoDiAvvio('notifiche', initializeNotificationService);
   // Il selettore dell'area e' raggiungibile dalla Home: quando l'utente la
