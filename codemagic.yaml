@@ -230,20 +230,17 @@ workflows:
         api_key: $APP_STORE_CONNECT_PRIVATE_KEY
         key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
         issuer_id: $APP_STORE_CONNECT_ISSUER_ID
-        # La build viene solo caricata. I gruppi interni con "accesso a tutte
-        # le build" la ricevono da soli appena Apple finisce di elaborarla:
-        # non va ne' chiesta ne' assegnata.
+        # Il gruppo va nominato esattamente come su App Store Connect, ed e'
+        # esterno: a un gruppo interno Apple non permette di legare una build,
+        # e i gruppi interni ricevono comunque da soli ogni build elaborata.
         #
-        # Le due alternative non funzionano, provate entrambe:
-        #  - submit_to_testflight senza gruppi tenta la sottomissione per il
-        #    test ESTERNO, che passa dalla Beta App Review e pretende i
-        #    contatti in "Test Information";
-        #  - indicare qui un gruppo interno fa fallire l'assegnazione, perche'
-        #    Apple non permette di legare una build a un gruppo interno.
-        #
-        # Per il test esterno: compilare "Test Information" su App Store
-        # Connect, creare un gruppo esterno e indicarlo in beta_groups.
-        submit_to_testflight: false
+        # Con un gruppo esterno la build passa dalla Beta App Review, che
+        # pretende compilato "Test Information": contatto, telefono, URL
+        # dell'informativa e le credenziali di un account, perche' senza
+        # accesso il revisore si ferma alla schermata di login.
+        submit_to_testflight: true
+        beta_groups:
+          - TESTER ESTERNI
       email:
         recipients:
           - stellaalessandro13@gmail.com
