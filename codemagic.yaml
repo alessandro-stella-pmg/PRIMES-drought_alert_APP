@@ -230,15 +230,20 @@ workflows:
         api_key: $APP_STORE_CONNECT_PRIVATE_KEY
         key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
         issuer_id: $APP_STORE_CONNECT_ISSUER_ID
-        submit_to_testflight: true
-        # Senza indicare il gruppo, Codemagic tenta la sottomissione per il
-        # test ESTERNO, che passa dalla Beta App Review e pretende i contatti
-        # in "Test Information". I gruppi interni non ne hanno bisogno: la
-        # build arriva ai tester appena Apple finisce di elaborarla.
-        # Per aprire al test esterno bastera' compilare quelle informazioni su
-        # App Store Connect e aggiungere qui il gruppo esterno.
-        beta_groups:
-          - DEV
+        # La build viene solo caricata. I gruppi interni con "accesso a tutte
+        # le build" la ricevono da soli appena Apple finisce di elaborarla:
+        # non va ne' chiesta ne' assegnata.
+        #
+        # Le due alternative non funzionano, provate entrambe:
+        #  - submit_to_testflight senza gruppi tenta la sottomissione per il
+        #    test ESTERNO, che passa dalla Beta App Review e pretende i
+        #    contatti in "Test Information";
+        #  - indicare qui un gruppo interno fa fallire l'assegnazione, perche'
+        #    Apple non permette di legare una build a un gruppo interno.
+        #
+        # Per il test esterno: compilare "Test Information" su App Store
+        # Connect, creare un gruppo esterno e indicarlo in beta_groups.
+        submit_to_testflight: false
       email:
         recipients:
           - stellaalessandro13@gmail.com
