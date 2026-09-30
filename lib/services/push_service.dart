@@ -137,7 +137,17 @@ class PushService {
       final initial = await messaging.getInitialMessage();
       if (initial != null) initialMessage = PushMessage.fromRemote(initial);
 
-      _token = await messaging.getToken();
+      // Su iOS getToken() attende il token APNs e, se la chiave APNs non e'
+      // configurata su Firebase, non torna mai. Senza questo limite l'app
+      // restava ferma sulla schermata iniziale: si rinuncia alle push, non
+      // all'avvio.
+      _token = await messaging.getToken().timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => null,
+      );
+      if (_token == null) {
+        debugPrint('[push] nessun token: notifiche non disponibili');
+      }
 
       // Il token puo' cambiare (reinstallazione, ripristino, pulizia dati):
       // senza questo listener il dispositivo smetterebbe di ricevere avvisi

@@ -525,9 +525,26 @@ void _handlePushOpened(PushMessage push) {
 /// modo di sapere al volo se il telefono ha davvero l'ultima.
 String appVersionLabel = '';
 
+/// Esegue un passo dell'avvio senza che possa impedire all'app di partire.
+///
+/// Un servizio che non risponde deve costare una funzione, non la schermata
+/// iniziale bloccata per sempre: senza questo, un token di notifica che non
+/// arriva teneva l'app ferma sul logo.
+Future<void> _passoDiAvvio(
+  String cosa,
+  Future<void> Function() passo, {
+  int secondi = 12,
+}) async {
+  try {
+    await passo().timeout(Duration(seconds: secondi));
+  } catch (e) {
+    debugPrint('[avvio] $cosa non completato: $e');
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await AppPrefs.load();
+  await _passoDiAvvio('preferenze', AppPrefs.load, secondi: 5);
 
   try {
     final info = await PackageInfo.fromPlatform();
@@ -538,16 +555,25 @@ Future<void> main() async {
 
   // FCM: canale affidabile, funziona anche ad app chiusa. Se Firebase non e'
   // configurato l'init non solleva e l'app resta usabile senza push.
-  await PushService.init(
-    onMessage: _handlePushMessage,
-    onOpened: _handlePushOpened,
+  await _passoDiAvvio(
+    'push',
+    () => PushService.init(
+      onMessage: _handlePushMessage,
+      onOpened: _handlePushOpened,
+    ),
   );
   // Sessione salvata sul dispositivo: chi era loggato entra direttamente.
-  await AuthService.ready();
+  await _passoDiAvvio('sessione', AuthService.ready);
   final area = selectedPilotArea.value;
-  if (area != null) await AuthService.setLanguage(area.locale.languageCode);
+  if (area != null) {
+    await _passoDiAvvio(
+      'lingua',
+      () => AuthService.setLanguage(area.locale.languageCode),
+      secondi: 5,
+    );
+  }
 
-  await initializeNotificationService();
+  await _passoDiAvvio('notifiche', initializeNotificationService);
   // Il selettore dell'area e' raggiungibile dalla Home: quando l'utente la
   // cambia, il canale va riscritto nella lingua nuova.
   selectedPilotArea.addListener(() {

@@ -46,26 +46,26 @@
 		<!-- Schemi che l'app puo' aprire: portale web, telefonate ed email
 	     dei contatti SOS. Senza questa lista url_launcher li considera
 	     non gestibili su iOS. -->
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>https</string>
-		<string>http</string>
-		<string>tel</string>
-		<string>mailto</string>
-	</array>
-	<!-- Le notifiche PRIMES devono arrivare anche ad app chiusa: senza
+		<key>LSApplicationQueriesSchemes</key>
+		<array>
+			<string>https</string>
+			<string>http</string>
+			<string>tel</string>
+			<string>mailto</string>
+		</array>
+		<!-- Le notifiche PRIMES devono arrivare anche ad app chiusa: senza
 	     questo background mode iOS non risveglia l'app per i messaggi
 	     FCM con payload dati. -->
-	<!-- L'app usa solo HTTPS, cioe' crittografia esente: dichiararlo qui
+		<!-- L'app usa solo HTTPS, cioe' crittografia esente: dichiararlo qui
 	     evita che ogni build resti bloccata su TestFlight in attesa che
 	     qualcuno risponda a mano alla domanda sulla conformita' export. -->
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>remote-notification</string>
-	</array>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
+		<key>ITSAppUsesNonExemptEncryption</key>
+		<false/>
+		<key>UIBackgroundModes</key>
+		<array>
+			<string>remote-notification</string>
+		</array>
+		<key>UIApplicationSupportsIndirectInputEvents</key>
 		<true/>
 		<key>UIStatusBarHidden</key>
 		<false/>

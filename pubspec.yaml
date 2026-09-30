@@ -1,7 +1,7 @@
 name: app_primes
 description: "PRIMES Inform - Interreg IPA ADRION"
 publish_to: 'none'
-version: 1.0.0+3
+version: 1.0.0+4
 
 environment:
   sdk: ^3.9.0
@@ -88,10 +88,11 @@ flutter_launcher_icons:
 # Rigenerare con:  dart run flutter_native_splash:create
 flutter_native_splash:
   color: "#FFFFFF"
-  image: assets/logo.png
-  branding: assets/Logo_interreg_PRIMES.png
-  branding_mode: bottom
+  # Un'unica immagine con i due marchi gia' impaginati e centrati, invece di
+  # logo al centro piu' branding in fondo: assets/logo.png ha margini bianchi
+  # enormi attorno al disegno, quindi il marchio appariva minuscolo.
+  # Si rigenera con:  dart run flutter_native_splash:create
+  image: assets/splash_primes.png
   android_12:
-    image: assets/logo.png
+    image: assets/splash_primes.png
     color: "#FFFFFF"
-    branding: assets/Logo_interreg_PRIMES.png
