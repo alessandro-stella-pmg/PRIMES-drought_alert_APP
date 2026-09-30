@@ -1,7 +1,7 @@
 name: app_primes
 description: "PRIMES Inform - Interreg IPA ADRION"
 publish_to: 'none'
-version: 1.0.0+12
+version: 1.0.0+13
 
 environment:
   sdk: ^3.9.0
