@@ -31,6 +31,14 @@ class AuthService {
 
   static bool get isSignedIn => currentUser != null;
 
+  /// Quando e' stato creato l'account.
+  ///
+  /// Serve a non mostrare all'utente le comunicazioni mandate alla sua area
+  /// prima che lui esistesse: sono avvisi che non lo riguardavano, e trovarne
+  /// una manciata di vecchi al primo avvio fa sembrare l'app gia' in ritardo.
+  static DateTime? get accountCreatedAt =>
+      currentUser?.metadata.creationTime?.toUtc();
+
   /// Attende che Firebase abbia ripristinato la sessione salvata, cosi' chi era
   /// gia' loggato entra direttamente invece di vedere il form di login.
   static Future<void> ready() async {

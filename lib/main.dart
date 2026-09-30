@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -247,9 +248,13 @@ AppNotification mergeNotification(AppNotification notif) {
 /// Ricarica lo storico dell'utente per l'area, dal backend.
 Future<void> loadNotifications(String areaId) async {
   final list = await ApiClient.notifications(areaId, limit: 50);
+  // Lo storico dell'area comincia prima dell'utente: si mostrano solo le
+  // comunicazioni successive alla creazione del suo account.
+  final dalla = AuthService.accountCreatedAt;
   final loaded = list
       .map(AppNotification.fromJson)
       .where((n) => !_eliminatePendenti.contains(n.key))
+      .where((n) => dalla == null || !n.timestamp.toUtc().isBefore(dalla))
       .toList();
 
   // Riprova le letture che il backend non ha ancora registrato.
@@ -552,6 +557,12 @@ Future<void> main() async {
   } catch (e) {
     debugPrint('[versione] non letta: $e');
   }
+
+  // Firebase va inizializzato prima di leggere la sessione, altrimenti
+  // AuthService lo considera non disponibile e l'utente risulta sempre
+  // disconnesso. Prima lo faceva PushService.init, che ora avviene dopo
+  // l'apertura: e' una lettura locale di google-services, non attende rete.
+  await _passoDiAvvio('firebase', Firebase.initializeApp, secondi: 8);
 
   // La sessione decide quale schermata si apre per prima, quindi si aspetta:
   // e' lettura locale e ha gia' un limite di cinque secondi al suo interno.
