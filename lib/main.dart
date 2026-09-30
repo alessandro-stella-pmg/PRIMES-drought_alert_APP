@@ -553,25 +553,9 @@ Future<void> main() async {
     debugPrint('[versione] non letta: $e');
   }
 
-  // FCM: canale affidabile, funziona anche ad app chiusa. Se Firebase non e'
-  // configurato l'init non solleva e l'app resta usabile senza push.
-  await _passoDiAvvio(
-    'push',
-    () => PushService.init(
-      onMessage: _handlePushMessage,
-      onOpened: _handlePushOpened,
-    ),
-  );
-  // Sessione salvata sul dispositivo: chi era loggato entra direttamente.
+  // La sessione decide quale schermata si apre per prima, quindi si aspetta:
+  // e' lettura locale e ha gia' un limite di cinque secondi al suo interno.
   await _passoDiAvvio('sessione', AuthService.ready);
-  final area = selectedPilotArea.value;
-  if (area != null) {
-    await _passoDiAvvio(
-      'lingua',
-      () => AuthService.setLanguage(area.locale.languageCode),
-      secondi: 5,
-    );
-  }
 
   await _passoDiAvvio('notifiche', initializeNotificationService);
   // Il selettore dell'area e' raggiungibile dalla Home: quando l'utente la
@@ -579,9 +563,6 @@ Future<void> main() async {
   selectedPilotArea.addListener(() {
     unawaited(_refreshNotificationChannel());
   });
-  final initial = PushService.initialMessage;
-  if (initial != null) _handlePushOpened(initial);
-
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -589,6 +570,41 @@ Future<void> main() async {
     ),
   );
   runApp(const PrimesApp());
+  unawaited(_dopoLApertura());
+}
+
+/// Cio' che puo' aspettare l'interfaccia: registrazione alle push e lingua
+/// dell'account.
+///
+/// Niente di tutto questo serve a disegnare la prima schermata, e su iOS la
+/// registrazione ad APNs puo' prendere secondi: aspettarla davanti al logo
+/// fermo era il motivo per cui l'avvio sembrava interminabile su iPad.
+Future<void> _dopoLApertura() async {
+  await _passoDiAvvio(
+    'push',
+    () => PushService.init(
+      onMessage: _handlePushMessage,
+      onOpened: _handlePushOpened,
+    ),
+  );
+
+  // L'app potrebbe essere stata aperta toccando una notifica ricevuta da
+  // chiusa: il messaggio si legge solo dopo l'inizializzazione.
+  final initial = PushService.initialMessage;
+  if (initial != null) _handlePushOpened(initial);
+
+  // La Home registra il dispositivo appena nasce, ma se e' nata prima che le
+  // push fossero pronte quella chiamata non ha fatto nulla. Si ripete qui,
+  // altrimenti il dispositivo non comparirebbe fra i destinatari.
+  final area = selectedPilotArea.value;
+  if (area != null) {
+    unawaited(PushService.registerForArea(area.id));
+    await _passoDiAvvio(
+      'lingua',
+      () => AuthService.setLanguage(area.locale.languageCode),
+      secondi: 5,
+    );
+  }
 }
 
 class PrimesApp extends StatelessWidget {
