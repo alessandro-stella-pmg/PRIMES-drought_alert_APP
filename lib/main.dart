@@ -152,8 +152,9 @@ class AppNotification {
   final String time;
   final DateTime timestamp;
   final bool isUrgent;
-  final String? attachmentName;
-  final String? documentUrl;
+
+  /// Gli allegati, nell'ordine in cui il cruscotto li ha caricati.
+  final List<NotificationAttachment> attachments;
   bool isRead;
 
   AppNotification({
@@ -163,10 +164,14 @@ class AppNotification {
     required this.timestamp,
     this.id,
     this.isUrgent = false,
-    this.attachmentName,
-    this.documentUrl,
+    this.attachments = const [],
     this.isRead = false,
   });
+
+  /// Il primo allegato. Serve dove passa un canale che ne prevede uno solo:
+  /// il payload push, e le notifiche salvate da versioni precedenti.
+  NotificationAttachment? get firstAttachment =>
+      attachments.isEmpty ? null : attachments.first;
 
   factory AppNotification.fromJson(Map<String, dynamic> json) {
     final raw = json['timestamp']?.toString();
@@ -180,12 +185,26 @@ class AppNotification {
       time: _formatTimestamp(timestamp),
       timestamp: timestamp,
       isUrgent: json['type']?.toString().toLowerCase() == 'emergency',
-      attachmentName: json['extra'] is Map
-          ? json['extra']['attachments']?.toString()
-          : json['documentName']?.toString(),
-      documentUrl: json['documentUrl']?.toString(),
+      attachments: _attachmentsFromJson(json),
       isRead: json['read'] == true,
     );
+  }
+
+  /// Gli allegati di una notifica dello storico. Quelle inviate prima che il
+  /// backend ne accettasse piu' d'uno non hanno la lista `documents`: portano
+  /// solo i campi singoli, ed extra.attachments col nome del file.
+  static List<NotificationAttachment> _attachmentsFromJson(
+    Map<String, dynamic> json,
+  ) {
+    final lista = NotificationAttachment.listFrom(json['documents']);
+    if (lista.isNotEmpty) return lista;
+    final name = json['extra'] is Map
+        ? json['extra']['attachments']?.toString()
+        : json['documentName']?.toString();
+    final url = json['documentUrl']?.toString();
+    if (name == null || name.isEmpty) return const [];
+    if (url == null || url.isEmpty) return const [];
+    return [NotificationAttachment(name: name, url: url)];
   }
 
   factory AppNotification.fromPush(PushMessage push) => AppNotification(
@@ -195,8 +214,7 @@ class AppNotification {
     time: _formatTimestamp(push.receivedAt),
     timestamp: push.receivedAt,
     isUrgent: push.isUrgent,
-    attachmentName: push.documentName,
-    documentUrl: push.documentUrl,
+    attachments: push.attachments,
   );
 
   /// Chiave stabile per selezione e deduplica, anche fra due caricamenti.
@@ -208,8 +226,9 @@ class AppNotification {
     body: body,
     isUrgent: isUrgent,
     receivedAt: timestamp,
-    documentUrl: documentUrl,
-    documentName: attachmentName,
+    documentUrl: firstAttachment?.url,
+    documentName: firstAttachment?.name,
+    attachments: attachments,
   );
 
   static String _formatTimestamp(DateTime timestamp) {
@@ -2627,18 +2646,16 @@ class NotificationDetailScreen extends StatefulWidget {
   final String body;
   final String time;
   final bool isUrgent;
-  final String? attachmentName;
 
-  /// Da dove scaricare l'allegato (backend PRIMES).
-  final String? documentUrl;
+  /// Gli allegati da scaricare dal backend PRIMES.
+  final List<NotificationAttachment> attachments;
   const NotificationDetailScreen({
     super.key,
     required this.title,
     required this.body,
     required this.time,
     required this.isUrgent,
-    this.attachmentName,
-    this.documentUrl,
+    this.attachments = const [],
   });
 
   @override
@@ -2647,22 +2664,24 @@ class NotificationDetailScreen extends StatefulWidget {
 }
 
 class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
-  bool _busy = false;
+  /// L'allegato in corso di scaricamento, se ce n'e' uno: con piu' riquadri
+  /// solo quello premuto deve mostrarsi occupato.
+  String? _inCorso;
 
   /// Scarica l'allegato (se non c'e' gia') e lo apre subito.
-  Future<void> _openAttachment() async {
+  Future<void> _openAttachment(NotificationAttachment attachment) async {
     final l10n = AppLocalizations.of(context);
     final messenger = ScaffoldMessenger.of(context);
-    final name = widget.attachmentName!;
-    final url = widget.documentUrl;
-    if (url == null) {
+    final name = attachment.name;
+    final url = attachment.url;
+    if (url.isEmpty) {
       messenger.showSnackBar(
         SnackBar(content: Text(l10n.t('notification_attachment_unavailable'))),
       );
       return;
     }
     final alreadyThere = Attachments.downloaded(url) != null;
-    setState(() => _busy = true);
+    setState(() => _inCorso = url);
     try {
       final doc = await Attachments.download(url: url, name: name);
       if (!alreadyThere) {
@@ -2683,7 +2702,7 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
         ),
       );
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _inCorso = null);
     }
   }
 
@@ -2694,7 +2713,7 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
     final title = widget.title;
     final body = widget.body;
     final time = widget.time;
-    final attachmentName = widget.attachmentName;
+    final attachments = widget.attachments;
     Color themeColor = isUrgent
         ? const Color(0xFFD32F2F)
         : const Color(0xFF0D47A1);
@@ -2763,9 +2782,20 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
                 color: Color(0xFF334155),
               ),
             ),
-            if (attachmentName != null) ...[
+            if (attachments.isNotEmpty) ...[
               const SizedBox(height: 40),
-              _attachmentBox(l10n, attachmentName),
+              Text(
+                l10n.t('notification_attachment_title'),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey,
+                ),
+              ),
+              for (final attachment in attachments) ...[
+                const SizedBox(height: 15),
+                _attachmentBox(l10n, attachment),
+              ],
             ],
           ],
         ),
@@ -2773,12 +2803,17 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
     );
   }
 
-  Widget _attachmentBox(AppLocalizations l10n, String name) {
+  Widget _attachmentBox(
+    AppLocalizations l10n,
+    NotificationAttachment attachment,
+  ) {
+    final name = attachment.name;
     final (icon, color) = fileIconFor(name);
     return ValueListenableBuilder<List<Map<String, String>>>(
       valueListenable: archivioDocumenti,
       builder: (context, _, _) {
-        final downloaded = Attachments.downloaded(widget.documentUrl);
+        final downloaded = Attachments.downloaded(attachment.url);
+        final busy = _inCorso == attachment.url;
         return Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -2789,15 +2824,6 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                l10n.t('notification_attachment_title'),
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey,
-                ),
-              ),
-              const SizedBox(height: 15),
               Row(
                 children: [
                   Icon(icon, color: color, size: 40),
@@ -2830,8 +2856,8 @@ class _NotificationDetailScreenState extends State<NotificationDetailScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: _busy ? null : _openAttachment,
-                  icon: _busy
+                  onPressed: busy ? null : () => _openAttachment(attachment),
+                  icon: busy
                       ? const SizedBox(
                           width: 20,
                           height: 20,
@@ -2885,8 +2911,7 @@ void openNotificationDetail(BuildContext context, AppNotification item) {
         body: item.body,
         time: item.time,
         isUrgent: item.isUrgent,
-        attachmentName: item.attachmentName,
-        documentUrl: item.documentUrl,
+        attachments: item.attachments,
       ),
     ),
   );
@@ -3233,7 +3258,7 @@ class _NotificheScreenState extends State<NotificheScreen> {
                           height: 1.4,
                         ),
                       ),
-                      if (item.attachmentName != null)
+                      if (item.attachments.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 8),
                           child: Row(

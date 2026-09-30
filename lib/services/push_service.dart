@@ -1,9 +1,50 @@
+import 'dart:convert';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
 import 'api_client.dart';
 import 'auth_service.dart';
+
+/// Un allegato di una notifica: il nome da mostrare e l'indirizzo da cui
+/// scaricarlo.
+@immutable
+class NotificationAttachment {
+  final String name;
+  final String url;
+
+  const NotificationAttachment({required this.name, required this.url});
+
+  /// Dalla lista `documents` del backend, gia' decodificata (storico) o ancora
+  /// come stringa JSON (payload push: FCM trasporta solo stringhe). Una lista
+  /// illeggibile non e' un errore da propagare: si resta senza allegati e la
+  /// notifica si legge lo stesso.
+  static List<NotificationAttachment> listFrom(dynamic raw) {
+    var value = raw;
+    if (value is String) {
+      if (value.isEmpty) return const [];
+      try {
+        value = jsonDecode(value);
+      } catch (_) {
+        return const [];
+      }
+    }
+    if (value is! List) return const [];
+    final attachments = <NotificationAttachment>[];
+    for (final item in value) {
+      if (item is! Map) continue;
+      final name = item['name']?.toString();
+      final url = item['url']?.toString();
+      if (name == null || name.isEmpty) continue;
+      if (url == null || url.isEmpty) continue;
+      attachments.add(NotificationAttachment(name: name, url: url));
+    }
+    return attachments;
+  }
+
+  Map<String, String> toJson() => {'name': name, 'url': url};
+}
 
 /// Notifica applicativa ricevuta da FCM.
 @immutable
@@ -16,6 +57,10 @@ class PushMessage {
   final bool isUrgent;
   final String? documentUrl;
   final String? documentName;
+
+  /// Tutti gli allegati. I due campi qui sopra descrivono solo il primo:
+  /// restano perche' li manda anche un backend che non conosce la lista.
+  final List<NotificationAttachment> attachments;
   final DateTime receivedAt;
 
   const PushMessage({
@@ -26,6 +71,7 @@ class PushMessage {
     this.id,
     this.documentUrl,
     this.documentName,
+    this.attachments = const [],
   });
 
   factory PushMessage.fromRemote(RemoteMessage message) {
@@ -48,13 +94,23 @@ class PushMessage {
       return value == null || value.isEmpty ? null : value;
     }
 
+    // La lista completa viaggia in `documents`. Puo' mancare: payload oltre i
+    // 4 KB di FCM, o notifica con un allegato solo. Allora vale il primo.
+    final firstUrl = text('documentUrl');
+    final firstName = text('documentName');
+    var attachments = NotificationAttachment.listFrom(data['documents']);
+    if (attachments.isEmpty && firstName != null && firstUrl != null) {
+      attachments = [NotificationAttachment(name: firstName, url: firstUrl)];
+    }
+
     return PushMessage(
       id: text('id'),
       title: title ?? text('title') ?? 'PRIMES',
       body: body ?? text('message') ?? '',
       isUrgent: text('type') == 'emergency',
-      documentUrl: text('documentUrl'),
-      documentName: text('documentName'),
+      documentUrl: firstUrl,
+      documentName: firstName,
+      attachments: attachments,
       receivedAt: DateTime.tryParse(text('timestamp') ?? '') ?? DateTime.now(),
     );
   }
@@ -67,6 +123,8 @@ class PushMessage {
     'timestamp': receivedAt.toIso8601String(),
     if (documentUrl != null) 'documentUrl': documentUrl!,
     if (documentName != null) 'documentName': documentName!,
+    if (attachments.length > 1)
+      'documents': jsonEncode(attachments.map((a) => a.toJson()).toList()),
   };
 }
 

@@ -2,6 +2,7 @@ import 'package:app_primes/config/api_config.dart';
 import 'package:app_primes/l10n/app_localizations.dart';
 import 'package:app_primes/main.dart';
 import 'package:app_primes/services/attachments.dart';
+import 'package:app_primes/services/push_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -59,8 +60,12 @@ void main() {
           body: 'Testo',
           time: '2026-09-14 15:00',
           isUrgent: true,
-          attachmentName: 'DOC_PRIMES.pdf',
-          documentUrl: '$backendBaseUrl/api/areas/it-marche/documents/a/file',
+          attachments: const [
+            NotificationAttachment(
+              name: 'DOC_PRIMES.pdf',
+              url: '$backendBaseUrl/api/areas/it-marche/documents/a/file',
+            ),
+          ],
         ),
       ),
     );
@@ -87,15 +92,16 @@ void main() {
       },
     ];
     await tester.pumpWidget(
-      const MaterialApp(
-        localizationsDelegates: [AppLocalizations.delegate],
+      MaterialApp(
+        localizationsDelegates: const [AppLocalizations.delegate],
         home: NotificationDetailScreen(
           title: 'Avviso',
           body: 'Testo',
           time: '2026-09-14 15:00',
           isUrgent: false,
-          attachmentName: 'DOC_PRIMES.pdf',
-          documentUrl: url,
+          attachments: [
+            NotificationAttachment(name: 'DOC_PRIMES.pdf', url: url),
+          ],
         ),
       ),
     );
@@ -104,5 +110,107 @@ void main() {
     expect(find.text('OPEN DOCUMENT'), findsOneWidget);
     expect(find.text('40 KB'), findsOneWidget);
     archivioDocumenti.value = [];
+  });
+
+  testWidgets('il dettaglio elenca tutti gli allegati', (tester) async {
+    archivioDocumenti.value = [];
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: const [AppLocalizations.delegate],
+        home: NotificationDetailScreen(
+          title: 'Avviso',
+          body: 'Testo',
+          time: '2026-09-14 15:00',
+          isUrgent: false,
+          attachments: const [
+            NotificationAttachment(
+              name: 'PRIMO.pdf',
+              url: '$backendBaseUrl/api/areas/it-marche/documents/a/file',
+            ),
+            NotificationAttachment(
+              name: 'SECONDO.xlsx',
+              url: '$backendBaseUrl/api/areas/it-marche/documents/b/file',
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('PRIMO.pdf'), findsOneWidget);
+    expect(find.text('SECONDO.xlsx'), findsOneWidget);
+    // Un pulsante per allegato: si scaricano uno alla volta.
+    expect(find.text('DOWNLOAD DOCUMENT'), findsNWidgets(2));
+  });
+
+  group('allegati nel payload della notifica', () {
+    test('la lista arriva dal campo documents', () {
+      final notifica = AppNotification.fromJson({
+        'id': 'n1',
+        'title': 'Avviso',
+        'message': 'Testo',
+        'timestamp': '2026-09-30T10:00:00.000Z',
+        'documents': [
+          {'name': 'PRIMO.pdf', 'url': '$backendBaseUrl/a'},
+          {'name': 'SECONDO.xlsx', 'url': '$backendBaseUrl/b'},
+        ],
+      });
+      expect(notifica.attachments.length, 2);
+      expect(notifica.attachments.first.name, 'PRIMO.pdf');
+      expect(notifica.firstAttachment?.url, '$backendBaseUrl/a');
+    });
+
+    test('una notifica vecchia porta comunque il suo allegato', () {
+      final notifica = AppNotification.fromJson({
+        'id': 'n2',
+        'title': 'Avviso',
+        'message': 'Testo',
+        'timestamp': '2026-09-30T10:00:00.000Z',
+        'documentUrl': '$backendBaseUrl/a',
+        'extra': {'attachments': 'VECCHIO.pdf'},
+      });
+      expect(notifica.attachments.length, 1);
+      expect(notifica.attachments.first.name, 'VECCHIO.pdf');
+    });
+
+    test('senza allegati la lista e\' vuota, non un elemento a vuoto', () {
+      final notifica = AppNotification.fromJson({
+        'id': 'n3',
+        'title': 'Avviso',
+        'message': 'Testo',
+        'timestamp': '2026-09-30T10:00:00.000Z',
+        'extra': {'attachments': null},
+      });
+      expect(notifica.attachments, isEmpty);
+      expect(notifica.firstAttachment, isNull);
+    });
+
+    test('dal push la lista viaggia come JSON', () {
+      final push = PushMessage.fromData({
+        'id': 'n4',
+        'title': 'Avviso',
+        'message': 'Testo',
+        'timestamp': '2026-09-30T10:00:00.000Z',
+        'documentName': 'PRIMO.pdf',
+        'documentUrl': '$backendBaseUrl/a',
+        'documentCount': '2',
+        'documents':
+            '[{"name":"PRIMO.pdf","url":"$backendBaseUrl/a"},'
+            '{"name":"SECONDO.xlsx","url":"$backendBaseUrl/b"}]',
+      });
+      expect(push.attachments.length, 2);
+      expect(push.attachments.last.name, 'SECONDO.xlsx');
+      // Se la lista non ci sta nel payload resta il primo allegato.
+      final ridotto = PushMessage.fromData({
+        'id': 'n5',
+        'title': 'Avviso',
+        'message': 'Testo',
+        'documentName': 'PRIMO.pdf',
+        'documentUrl': '$backendBaseUrl/a',
+        'documentCount': '7',
+      });
+      expect(ridotto.attachments.length, 1);
+      expect(ridotto.attachments.first.name, 'PRIMO.pdf');
+    });
   });
 }
