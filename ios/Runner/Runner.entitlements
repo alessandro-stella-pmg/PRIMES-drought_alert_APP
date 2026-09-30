@@ -2,7 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- L'unico canale di distribuzione di quest'app e' App Store/TestFlight,
+	     che usa l'APNs di produzione. Dichiarare "development" faceva
+	     registrare l'app sull'ambiente sandbox: APNs rifiutava il binario
+	     firmato per la distribuzione, il token non arrivava e il dispositivo
+	     non compariva fra i destinatari. Apple non riscrive questo valore in
+	     fase di esportazione: quello che si dichiara e' quello che si spedisce. -->
 	<key>aps-environment</key>
-	<string>development</string>
+	<string>production</string>
 </dict>
 </plist>
